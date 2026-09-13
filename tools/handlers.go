@@ -331,7 +331,6 @@ func remember(s *store.Store, call *toolspec.ToolCall, host Host) (string, error
 			g, err := s.GeneralDomain(call.Ctx, s.DB())
 			if errors.Is(err, store.ErrNotFound) {
 				g, err = s.CreateDomain(call.Ctx, s.DB(), store.CreateDomainParams{
-					AgentID: call.AgentID, SessionKey: call.Session,
 					Name: "General", Sticky: true, Status: store.StatusActive,
 					Summary: "Global rules, preferences, and standing facts.",
 				})
@@ -345,10 +344,8 @@ func remember(s *store.Store, call *toolspec.ToolCall, host Host) (string, error
 			d, err := s.DomainByName(call.Ctx, s.DB(), hint)
 			if errors.Is(err, store.ErrNotFound) {
 				d, err = s.CreateDomain(call.Ctx, s.DB(), store.CreateDomainParams{
-					AgentID:    call.AgentID,
-					SessionKey: call.Session,
-					Name:       hint,
-					Status:     store.StatusActive,
+					Name:   hint,
+					Status: store.StatusActive,
 				})
 			}
 			if err != nil {
@@ -526,8 +523,6 @@ func createDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	}
 	kw, _ := argStrSlice(call, "keyword_triggers")
 	d, err := s.CreateDomain(call.Ctx, s.DB(), store.CreateDomainParams{
-		AgentID:         call.AgentID,
-		SessionKey:      call.Session,
 		Sticky:          argBool(call, "sticky", false),
 		Name:            name,
 		Status:          store.StatusActive,

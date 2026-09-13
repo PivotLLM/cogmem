@@ -14,7 +14,7 @@ func TestSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if _, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "Proj", Summary: "x"}); err != nil {
+	if _, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "Proj", Summary: "x"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	_ = s.Close()

@@ -40,7 +40,7 @@ func add(t *testing.T, s *Store, domainID string, typ MemoryType, text string) M
 func TestPurgeExpiredEventsOnlyTouchesOldEvents(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "Ops"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "Ops"})
 
 	oldEvent := add(t, s, d.ID, TypeEvent, "oversight run, nothing changed")
 	newEvent := add(t, s, d.ID, TypeEvent, "oversight run this morning")
@@ -77,7 +77,7 @@ func TestPurgeExpiredEventsOnlyTouchesOldEvents(t *testing.T) {
 func TestPurgeExpiredEventsInvalidatesTheStableBlock(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "Ops", Sticky: true})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "Ops", Sticky: true})
 	m := add(t, s, d.ID, TypeEvent, "an old run")
 	age(t, s, m.ID, 60)
 
@@ -105,7 +105,7 @@ func TestPurgeExpiredEventsInvalidatesTheStableBlock(t *testing.T) {
 func TestPurgeRetiredMemoriesMeasuresFromRetirement(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "Ops"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "Ops"})
 
 	longGone := add(t, s, d.ID, TypeFact, "retired long ago")
 	justRetired := add(t, s, d.ID, TypeFact, "written long ago, retired yesterday")
@@ -148,7 +148,7 @@ func TestPurgeRetiredMemoriesMeasuresFromRetirement(t *testing.T) {
 func TestPurgeKeepsEverythingWhenDisabled(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "Ops"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "Ops"})
 	ev := add(t, s, d.ID, TypeEvent, "ancient run")
 	ret := add(t, s, d.ID, TypeFact, "ancient fact")
 	_ = s.RetireMemory(ctx, s.DB(), ret.ID, "old")
@@ -178,7 +178,7 @@ func TestPurgeKeepsEverythingWhenDisabled(t *testing.T) {
 func TestPromptMemoriesAreOldestFirst(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "Ops"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "Ops"})
 
 	oldest := add(t, s, d.ID, TypeRule, "the original instruction")
 	middle := add(t, s, d.ID, TypeRule, "a revision")

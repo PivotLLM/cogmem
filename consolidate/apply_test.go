@@ -21,7 +21,7 @@ func TestApplySupersedeEndToEnd(t *testing.T) {
 
 	// Seed: a project domain with a rule hook.
 	d, _ := st.CreateDomain(ctx, st.DB(), store.CreateDomainParams{
-		AgentID: "alice", Name: "Layout", Status: store.StatusActive,
+		Name: "Layout", Status: store.StatusActive,
 	})
 	h, _ := st.AddMemory(ctx, st.DB(), store.AddMemoryParams{
 		DomainID: d.ID, Type: store.TypeRule, Text: "Never use the color blue.",
@@ -36,7 +36,7 @@ func TestApplySupersedeEndToEnd(t *testing.T) {
 		ConflictLedger: []LedgerEntry{{Resolved: "swapped blue rule", Reason: "user said so", Evidence: store.Evidence{SeqStart: 512, SeqEnd: 512}}},
 	}
 
-	n, err := Apply(ctx, st, out, ApplyContext{AgentID: "alice", SessionKey: "agent:alice:main", Actor: "sleep_cycle"})
+	n, err := Apply(ctx, st, out, ApplyContext{Actor: "sleep_cycle"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestApplyCreateWithTmpID(t *testing.T) {
 		DomainOps: []DomainOp{{Op: "create", TmpID: "t1", Name: "New Project", Summary: "x", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}},
 		MemoryOps: []MemoryOp{{Op: "add", Domain: "t1", Type: "fact", Text: "a durable fact", Confidence: 0.9, Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}},
 	}
-	n, err := Apply(ctx, st, out, ApplyContext{AgentID: "alice", Actor: "sleep_cycle"})
+	n, err := Apply(ctx, st, out, ApplyContext{Actor: "sleep_cycle"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestApplySetsTriggers(t *testing.T) {
 			Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1},
 		}},
 	}
-	if _, err := Apply(ctx, st, out, ApplyContext{AgentID: "alice", Actor: "sleep_cycle"}); err != nil {
+	if _, err := Apply(ctx, st, out, ApplyContext{Actor: "sleep_cycle"}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	doms, _ := st.ListDomains(ctx, st.DB(), store.StatusActive)
@@ -131,7 +131,7 @@ func TestApplySetsKeywordTriggers(t *testing.T) {
 			Evidence:        store.Evidence{SeqStart: 1, SeqEnd: 1},
 		}},
 	}
-	if _, err := Apply(ctx, st, out, ApplyContext{AgentID: "alice", Actor: "sleep_cycle"}); err != nil {
+	if _, err := Apply(ctx, st, out, ApplyContext{Actor: "sleep_cycle"}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	doms, _ := st.ListDomains(ctx, st.DB(), store.StatusActive)
@@ -166,7 +166,7 @@ func TestApplyStickyCreateAndUpdate(t *testing.T) {
 			Sticky: &yes, Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1},
 		}},
 	}
-	if _, err := Apply(ctx, st, createOut, ApplyContext{AgentID: "alice", Actor: "sleep_cycle"}); err != nil {
+	if _, err := Apply(ctx, st, createOut, ApplyContext{Actor: "sleep_cycle"}); err != nil {
 		t.Fatalf("apply create: %v", err)
 	}
 	d, err := st.DomainByName(ctx, st.DB(), "House Rules")
@@ -181,7 +181,7 @@ func TestApplyStickyCreateAndUpdate(t *testing.T) {
 			Evidence: store.Evidence{SeqStart: 2, SeqEnd: 2},
 		}},
 	}
-	if _, err := Apply(ctx, st, updateOut, ApplyContext{AgentID: "alice", Actor: "sleep_cycle"}); err != nil {
+	if _, err := Apply(ctx, st, updateOut, ApplyContext{Actor: "sleep_cycle"}); err != nil {
 		t.Fatalf("apply update: %v", err)
 	}
 	d2, _ := st.GetDomain(ctx, st.DB(), d.ID, false)

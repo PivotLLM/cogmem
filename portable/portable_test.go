@@ -28,7 +28,7 @@ func seed(t *testing.T, s *store.Store) {
 	t.Helper()
 	ctx := context.Background()
 	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{
-		AgentID: "alice", Name: "Craft", Summary: "how to write",
+		Name: "Craft", Summary: "how to write",
 		Triggers: "file_write", KeywordTriggers: "style guide",
 		State: store.DomainState{Blockers: []string{"waiting on the brief"}},
 	})
@@ -86,7 +86,7 @@ func TestRoundTripPreservesEverything(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	dst := newStore(t, "dst.cogmem.db")
-	if _, err := Import(ctx, dst, parsed, ImportReplace, "bob", "agent:bob:main"); err != nil {
+	if _, err := Import(ctx, dst, parsed, ImportReplace); err != nil {
 		t.Fatalf("import: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func compare(t *testing.T, want, got Document) {
 func TestLongTextIsWrittenAsALiteralBlock(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t, "block.cogmem.db")
-	d, _ := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{AgentID: "a", Name: "Voice"})
+	d, _ := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{Name: "Voice"})
 	long := "Name specific sounds (thud, click, scrape) or omit vague auditory " +
 		"descriptions entirely, because a reader cannot picture a soft sound."
 	multi := "First line of guidance.\nSecond line of guidance."
@@ -193,13 +193,13 @@ func TestMergeIsAdditiveAndRepeatable(t *testing.T) {
 	doc, _ := Export(ctx, src)
 
 	dst := newStore(t, "m-dst.cogmem.db")
-	d, _ := dst.CreateDomain(ctx, dst.DB(), store.CreateDomainParams{AgentID: "b", Name: "Craft"})
+	d, _ := dst.CreateDomain(ctx, dst.DB(), store.CreateDomainParams{Name: "Craft"})
 	kept, _ := dst.AddMemory(ctx, dst.DB(), store.AddMemoryParams{
 		DomainID: d.ID, Type: store.TypeFact, Text: "Something only Bob knows.",
 		Status: store.StatusActive, Confidence: 0.9,
 	})
 
-	first, err := Import(ctx, dst, doc, ImportMerge, "bob", "agent:bob:main")
+	first, err := Import(ctx, dst, doc, ImportMerge)
 	if err != nil {
 		t.Fatalf("first merge: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestMergeIsAdditiveAndRepeatable(t *testing.T) {
 		t.Errorf("merge destroyed an existing memory: %v", err)
 	}
 
-	second, err := Import(ctx, dst, doc, ImportMerge, "bob", "agent:bob:main")
+	second, err := Import(ctx, dst, doc, ImportMerge)
 	if err != nil {
 		t.Fatalf("second merge: %v", err)
 	}
@@ -239,13 +239,13 @@ func TestReplaceDiscardsWhatWasThere(t *testing.T) {
 	doc, _ := Export(ctx, src)
 
 	dst := newStore(t, "r-dst.cogmem.db")
-	d, _ := dst.CreateDomain(ctx, dst.DB(), store.CreateDomainParams{AgentID: "b", Name: "Scratch"})
+	d, _ := dst.CreateDomain(ctx, dst.DB(), store.CreateDomainParams{Name: "Scratch"})
 	doomed, _ := dst.AddMemory(ctx, dst.DB(), store.AddMemoryParams{
 		DomainID: d.ID, Type: store.TypeFact, Text: "Learned after the export.",
 		Status: store.StatusActive, Confidence: 0.9,
 	})
 
-	if _, err := Import(ctx, dst, doc, ImportReplace, "bob", "agent:bob:main"); err != nil {
+	if _, err := Import(ctx, dst, doc, ImportReplace); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
 	if _, err := dst.GetMemory(ctx, dst.DB(), doomed.ID); err == nil {
@@ -267,7 +267,7 @@ func TestImportReMintsIDs(t *testing.T) {
 	doc, _ := Export(ctx, src)
 
 	dst := newStore(t, "i-dst.cogmem.db")
-	if _, err := Import(ctx, dst, doc, ImportMerge, "bob", "agent:bob:main"); err != nil {
+	if _, err := Import(ctx, dst, doc, ImportMerge); err != nil {
 		t.Fatalf("import: %v", err)
 	}
 	after, _ := Export(ctx, dst)
@@ -320,7 +320,7 @@ func TestUnknownTypeFallsBackToFactNotEvent(t *testing.T) {
 			},
 		}},
 	}
-	if _, err := Import(ctx, dst, doc, ImportMerge, "a", "s"); err != nil {
+	if _, err := Import(ctx, dst, doc, ImportMerge); err != nil {
 		t.Fatalf("import: %v", err)
 	}
 	after, _ := Export(ctx, dst)

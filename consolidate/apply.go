@@ -13,8 +13,6 @@ import (
 
 // ApplyContext carries the metadata recorded on every applied operation.
 type ApplyContext struct {
-	AgentID    string
-	SessionKey string
 	Actor      string // sleep_cycle, mcp_tool, ...
 	Model      string
 	PromptHash string
@@ -33,7 +31,6 @@ func Apply(ctx context.Context, st *store.Store, out Output, ac ApplyContext) (i
 			switch op.Op {
 			case "create":
 				d, err := st.CreateDomain(ctx, tx, store.CreateDomainParams{
-					AgentID: ac.AgentID, SessionKey: ac.SessionKey,
 					Sticky:          op.Sticky != nil && *op.Sticky,
 					Name:            op.Name,
 					Status:          store.Status(orDefault(op.Status, "active")),

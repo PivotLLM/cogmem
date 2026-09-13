@@ -41,8 +41,6 @@ func (s *Store) nameTaken(ctx context.Context, q DBTX, name, excludeID string) (
 
 // CreateDomainParams are the inputs for CreateDomain.
 type CreateDomainParams struct {
-	AgentID         string
-	SessionKey      string
 	Sticky          bool // injected into every prompt when true (use sparingly)
 	Name            string
 	Status          Status // active or review
@@ -75,11 +73,11 @@ func (s *Store) CreateDomain(ctx context.Context, q DBTX, p CreateDomainParams) 
 	ts := now()
 	// All timestamps are unix seconds. Creation counts as the first activity.
 	_, err = q.ExecContext(ctx, `
-		INSERT INTO domains(id, agent_id, session_key, type, name, status, version,
+		INSERT INTO domains(id, type, name, status, version,
 		                    summary, state_json, schema_name, schema_version,
 		                    last_active_at, triggers, keyword_triggers, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, p.AgentID, p.SessionKey, stickyValue(p.Sticky), p.Name, string(p.Status), 1,
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, stickyValue(p.Sticky), p.Name, string(p.Status), 1,
 		p.Summary, string(stateJSON), "domain", 1, ts, normalizeTriggers(p.Triggers), normalizeKeywords(p.KeywordTriggers), ts, ts)
 	if err != nil {
 		return Domain{}, fmt.Errorf("cogmem: create domain: %w", err)
@@ -312,7 +310,7 @@ func (s *Store) ListDomains(ctx context.Context, q DBTX, statuses ...Status) ([]
 }
 
 const domainSelect = `
-	SELECT id, agent_id, session_key, type, name, status, version, summary,
+	SELECT id, type, name, status, version, summary,
 	       state_json, schema_name, schema_version, last_active_at, triggers,
 	       keyword_triggers, created_at, updated_at, archived_at
 	FROM domains`
@@ -445,7 +443,7 @@ func scanDomain(sc scanner) (Domain, error) {
 		createdAt, updatedAt      int64
 		lastActivePtr, archivedAt *int64
 	)
-	err := sc.Scan(&d.ID, &d.AgentID, &d.SessionKey, &typ, &d.Name, &status,
+	err := sc.Scan(&d.ID, &typ, &d.Name, &status,
 		&d.Version, &d.Summary, &stateJSON, &d.SchemaName, &d.SchemaVersion,
 		&lastActivePtr, &d.Triggers, &d.KeywordTriggers, &createdAt, &updatedAt, &archivedAt)
 	if err != nil {

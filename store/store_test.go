@@ -60,7 +60,6 @@ func TestDomainCreateAndIDs(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	d1, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{
-		AgentID: "alice", SessionKey: "agent:alice:main",
 		Name: "Website Redesign", Status: StatusActive,
 		Summary: "CSS grid migration",
 	})
@@ -71,7 +70,6 @@ func TestDomainCreateAndIDs(t *testing.T) {
 		t.Fatalf("first domain id = %q, want d+5 chars", d1.ID)
 	}
 	d2, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{
-		AgentID: "alice", SessionKey: "agent:alice:main",
 		Name: "BioTech",
 	})
 	if err != nil {
@@ -95,14 +93,14 @@ func TestDomainCreateAndIDs(t *testing.T) {
 func TestCreateDuplicateNameRejected(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	if _, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "Dup"}); err != nil {
+	if _, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "Dup"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "  dup  "}); !errors.Is(err, ErrDuplicateName) {
+	if _, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "  dup  "}); !errors.Is(err, ErrDuplicateName) {
 		t.Fatalf("duplicate create err = %v, want ErrDuplicateName", err)
 	}
 	// The seeded "General" name is also taken.
-	if _, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "general"}); !errors.Is(err, ErrDuplicateName) {
+	if _, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "general"}); !errors.Is(err, ErrDuplicateName) {
 		t.Fatalf("duplicate General err = %v, want ErrDuplicateName", err)
 	}
 }
@@ -111,7 +109,7 @@ func TestDomainTriggersRoundTrip(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	d, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{
-		AgentID: "a", Name: "Email",
+		Name:     "Email",
 		Triggers: "  Google_Gmail, microsoft365_mail ,, system  ",
 	})
 	if err != nil {
@@ -149,7 +147,7 @@ func TestDomainTriggerWildcardsAreDecorative(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	d, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{
-		AgentID: "a", Name: "Dev",
+		Name:     "Dev",
 		Triggers: "*github*, *mail*",
 	})
 	if err != nil {
@@ -177,7 +175,7 @@ func TestTriggerUnderscoreInsensitive(t *testing.T) {
 	ctx := context.Background()
 	// Token written with double underscores is collapsed on store.
 	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{
-		AgentID: "a", Name: "M", Triggers: "fusion__google",
+		Name: "M", Triggers: "fusion__google",
 	})
 	if d.Triggers != "fusion_google" {
 		t.Fatalf("triggers = %q, want collapsed fusion_google", d.Triggers)
@@ -205,8 +203,8 @@ func TestNormalizeLegacyTypes(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	// Two domains + a memory, then force legacy string values directly.
-	topic, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "P"})
-	legacyGen, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "LegacyGlobal"})
+	topic, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "P"})
+	legacyGen, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "LegacyGlobal"})
 	m, _ := s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: topic.ID, Type: TypeFact, Text: "x", Status: StatusActive, Confidence: 0.9})
 	if _, err := s.DB().ExecContext(ctx, `UPDATE memories SET type='lesson' WHERE id=?`, m.ID); err != nil {
 		t.Fatalf("force legacy memory type: %v", err)
@@ -243,8 +241,8 @@ func TestDedupeActiveMemories(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	db := s.DB()
-	d, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "P"})
-	other, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "Q"})
+	d, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "P"})
+	other, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Q"})
 
 	add := func(domainID, text string) {
 		_, _ = s.AddMemory(ctx, db, AddMemoryParams{DomainID: domainID, Type: TypeFact, Text: text, Status: StatusActive, Confidence: 0.9})
@@ -320,8 +318,8 @@ func TestMigrateDomain(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	db := s.DB()
-	from, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "From"})
-	to, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "To"})
+	from, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "From"})
+	to, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "To"})
 	add := func(domainID, text string) {
 		_, _ = s.AddMemory(ctx, db, AddMemoryParams{DomainID: domainID, Type: TypeFact, Text: text, Status: StatusActive, Confidence: 0.9})
 	}
@@ -351,12 +349,12 @@ func TestPurgeNonActive(t *testing.T) {
 	db := s.DB()
 
 	// Active topic domain with an active + a retired memory.
-	keep, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "Keep", Status: StatusActive})
+	keep, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Keep", Status: StatusActive})
 	_, _ = s.AddMemory(ctx, db, AddMemoryParams{DomainID: keep.ID, Type: TypeFact, Text: "active fact", Status: StatusActive, Confidence: 0.9})
 	_, _ = s.AddMemory(ctx, db, AddMemoryParams{DomainID: keep.ID, Type: TypeFact, Text: "old fact", Status: StatusRetired, Confidence: 0.9})
 
 	// Archived domain with a (still-active) memory — both should go.
-	arch, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "Arch", Status: StatusActive})
+	arch, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Arch", Status: StatusActive})
 	_, _ = s.AddMemory(ctx, db, AddMemoryParams{DomainID: arch.ID, Type: TypeFact, Text: "archived domain fact", Status: StatusActive, Confidence: 0.9})
 	if err := s.ArchiveDomain(ctx, db, arch.ID); err != nil {
 		t.Fatalf("archive: %v", err)
@@ -403,7 +401,7 @@ func TestPurgeNonActive(t *testing.T) {
 func TestDomainUpdatePatch(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "P", Summary: "orig"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "P", Summary: "orig"})
 	sum := "updated summary"
 	if err := s.UpdateDomain(ctx, s.DB(), d.ID, UpdateDomainParams{Summary: &sum}); err != nil {
 		t.Fatalf("update: %v", err)
@@ -479,7 +477,7 @@ func TestHookLifecycleAndStableRev(t *testing.T) {
 func TestDeleteMemory(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "P"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "P"})
 	m, _ := s.AddMemory(ctx, s.DB(), AddMemoryParams{
 		DomainID: d.ID, Type: TypeFact, Text: "delete me", Status: StatusActive,
 		Confidence: 0.9,
@@ -500,7 +498,7 @@ func TestDeleteMemory(t *testing.T) {
 func TestMemoryOriginRoundTrip(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "P"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "P"})
 
 	withOrigin, _ := s.AddMemory(ctx, s.DB(), AddMemoryParams{
 		DomainID: d.ID, Type: TypeFact, Text: "from a human", Status: StatusActive,
@@ -535,7 +533,7 @@ func TestMemoryOriginRoundTrip(t *testing.T) {
 func TestSearchExcludesEventsUnlessAsked(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "P"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "P"})
 	_, _ = s.AddMemory(ctx, s.DB(), AddMemoryParams{
 		DomainID: d.ID, Type: TypeFact, Text: "The BioTech report targets Q3.",
 		Status: StatusActive, Confidence: 0.9,
@@ -579,7 +577,7 @@ func TestSearchExcludesEventsUnlessAsked(t *testing.T) {
 func TestPromptMemoriesExcludeEventsAndCountThem(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{AgentID: "a", Name: "Trips"})
+	d, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "Trips"})
 	for _, tc := range []struct {
 		typ  MemoryType
 		text string
@@ -663,7 +661,7 @@ func TestDomainKeywordTriggers(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	d, err := s.CreateDomain(ctx, s.DB(), CreateDomainParams{
-		AgentID: "a", Name: "Briefing",
+		Name:            "Briefing",
 		KeywordTriggers: "  Morning Routine , weekly report ,, ",
 	})
 	if err != nil {

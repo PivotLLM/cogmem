@@ -37,7 +37,7 @@ func TestStableBlockContent(t *testing.T) {
 	db := s.DB()
 	base, _ := s.GeneralDomain(ctx, db) // the seeded always-on general domain
 	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{DomainID: base.ID, Type: store.TypePreference, Text: "Be concise.", Status: store.StatusActive, Confidence: 0.95})
-	proj, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Website Redesign", Summary: "CSS grid migration"})
+	proj, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Website Redesign", Summary: "CSS grid migration"})
 	_ = proj
 	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{DomainID: base.ID, Type: store.TypeRule, Text: "Prefers tabs.", Status: store.StatusActive, Confidence: 0.9})
 
@@ -139,10 +139,10 @@ func TestRoutedBlockToolTrigger(t *testing.T) {
 	db := s.DB()
 	// Two domains; "Email" is older (less recent) but trigger-matched.
 	email, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{
-		AgentID: "a", Name: "Email", Summary: "mail prefs",
+		Name: "Email", Summary: "mail prefs",
 		Triggers: "google_gmail,microsoft365_mail",
 	})
-	other, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Other", Summary: "misc"})
+	other, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Other", Summary: "misc"})
 	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{DomainID: email.ID, Type: store.TypePreference, Text: "Archive newsletters.", Status: store.StatusActive, Confidence: 0.9})
 	// "Other" is the most recently touched, so recency alone would rank it first.
 	_ = s.Touch(ctx, db, email.ID)
@@ -174,7 +174,7 @@ func TestRoutedBlockToolTriggerNoDuplicate(t *testing.T) {
 	db := s.DB()
 	// A domain that is BOTH tool-triggered AND the most recent must appear once.
 	d, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{
-		AgentID: "a", Name: "Email", Summary: "mail", Triggers: "gmail",
+		Name: "Email", Summary: "mail", Triggers: "gmail",
 	})
 	_ = s.Touch(ctx, db, d.ID)
 
@@ -203,9 +203,9 @@ func TestRoutedBlockTouchesMatchedNotRecency(t *testing.T) {
 	ctx := context.Background()
 	db := s.DB()
 	email, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{
-		AgentID: "a", Name: "Email", Summary: "mail", Triggers: "gmail",
+		Name: "Email", Summary: "mail", Triggers: "gmail",
 	})
-	other, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Other", Summary: "misc"})
+	other, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Other", Summary: "misc"})
 
 	// Pre-age both domains so the second-granularity touch is observable (creation
 	// and the compose call would otherwise share the same wall-clock second).
@@ -243,8 +243,8 @@ func TestRoutedBlockLexicalMatch(t *testing.T) {
 	ctx := context.Background()
 	db := s.DB()
 	// "BioTech" is older/less recent; "Other" is the most recently touched.
-	bio, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "BioTech", Summary: "research report"})
-	other, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Other", Summary: "misc"})
+	bio, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "BioTech", Summary: "research report"})
+	other, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Other", Summary: "misc"})
 	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{DomainID: bio.ID, Type: store.TypeFact, Text: "The biotech report targets Q3.", Status: store.StatusActive, Confidence: 0.9})
 	_ = s.Touch(ctx, db, bio.ID)
 	_ = s.Touch(ctx, db, other.ID)
@@ -270,7 +270,7 @@ func TestRoutedBlockSignalPriorityNoDuplicate(t *testing.T) {
 	// One domain is both lexically matched AND tool-triggered; it must appear once
 	// and the stronger (tool) signal wins.
 	email, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{
-		AgentID: "a", Name: "Email", Summary: "email handling", Triggers: "google_gmail",
+		Name: "Email", Summary: "email handling", Triggers: "google_gmail",
 	})
 	_ = s.Touch(ctx, db, email.ID)
 
@@ -308,8 +308,8 @@ func TestRoutedBlockRecency(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	db := s.DB()
-	d1, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Old", Summary: "old"})
-	d2, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Recent", Summary: "recent"})
+	d1, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Old", Summary: "old"})
+	d2, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Recent", Summary: "recent"})
 	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{DomainID: d2.ID, Type: store.TypeFact, Text: "key fact", Status: store.StatusActive, Confidence: 0.9})
 	// Make d2 strictly more recent than d1 (seconds granularity): age d1 back, d2 = now.
 	old := time.Now().Add(-1 * time.Hour).Unix()
@@ -342,11 +342,11 @@ func TestRoutedBlockKeywordTrigger(t *testing.T) {
 	db := s.DB()
 	// "Daily Ops" is named so it doesn't lexically collide with "morning".
 	wf, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{
-		AgentID: "a", Name: "Daily Ops",
+		Name:            "Daily Ops",
 		KeywordTriggers: "morning routine",
 	})
 	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{DomainID: wf.ID, Type: store.TypeRule, Text: "Review the calendar.", Status: store.StatusActive, Confidence: 0.9})
-	other, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Other", Summary: "misc"})
+	other, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Other", Summary: "misc"})
 	_ = s.Touch(ctx, db, wf.ID)
 	_ = s.Touch(ctx, db, other.ID) // Other is the most recent
 

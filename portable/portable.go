@@ -225,7 +225,7 @@ type ImportResult struct {
 // document be loaded into a different agent — seeding a new assistant from an
 // existing one's domains. Nothing outside a single database refers to a memory
 // id, so a restore under new ids is indistinguishable from the original.
-func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode, agentID, sessionKey string) (ImportResult, error) {
+func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode) (ImportResult, error) {
 	var res ImportResult
 	if mode != ImportMerge && mode != ImportReplace {
 		return res, fmt.Errorf("cogmem: unknown import mode %q", mode)
@@ -252,12 +252,10 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode,
 			res.DomainsMatched++
 		default:
 			target, err = st.CreateDomain(ctx, st.DB(), store.CreateDomainParams{
-				AgentID:    agentID,
-				SessionKey: sessionKey,
-				Sticky:     d.Sticky,
-				Name:       name,
-				Status:     domainStatus(d.Status),
-				Summary:    d.Summary,
+				Sticky:  d.Sticky,
+				Name:    name,
+				Status:  domainStatus(d.Status),
+				Summary: d.Summary,
 				State: store.DomainState{
 					Blockers:    d.Blockers,
 					NextActions: d.NextActions,

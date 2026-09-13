@@ -122,3 +122,25 @@ func TestInbox_RoundTrip(t *testing.T) {
 		t.Fatal("backfill flag did not stick")
 	}
 }
+
+// TestMigrationV8DropsDomainOwnerColumns: a store from before v8 loses the
+// agent_id and session_key columns on open, and keeps its domains.
+func TestMigrationV8DropsDomainOwnerColumns(t *testing.T) {
+	s, err := Open(legacyV5(t, "v5.cogmem.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	cols, err := s.columnSet(context.Background(), "domains")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"agent_id", "session_key"} {
+		if cols[c] {
+			t.Fatalf("domains.%s still present after migration", c)
+		}
+	}
+	if _, err := s.DomainByName(context.Background(), s.DB(), "General"); err != nil {
+		t.Fatalf("General domain lost in migration: %v", err)
+	}
+}

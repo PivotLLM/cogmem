@@ -90,9 +90,7 @@ type DomainState struct {
 
 // Domain is one coherent body of learned knowledge in a session.
 type Domain struct {
-	ID         string
-	AgentID    string
-	SessionKey string
+	ID string
 	// StickyPriority is stored in the legacy "type" column (TEXT, parsed as int):
 	// 0 / non-numeric = not sticky; > 0 = sticky (injected into every prompt). The
 	// magnitude is reserved as a future sort key. See Sticky.

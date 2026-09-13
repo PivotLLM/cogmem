@@ -147,6 +147,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.dropLegacyMemoryColumns(ctx); err != nil {
 		return fmt.Errorf("cogmem: drop legacy memory columns: %w", err)
 	}
+	if err := s.dropLegacyDomainColumns(ctx); err != nil {
+		return fmt.Errorf("cogmem: drop legacy domain columns: %w", err)
+	}
 	if err := s.seedGeneralOnce(ctx); err != nil {
 		return fmt.Errorf("cogmem: seed general domain: %w", err)
 	}
@@ -292,6 +295,26 @@ func (s *Store) collapseConsolidationState(ctx context.Context) error {
 	}
 	_, err = s.db.ExecContext(ctx, `DELETE FROM consolidation_state WHERE archive_path != ?`, InboxStateKey)
 	return err
+}
+
+// dropLegacyDomainColumns (v8) removes domains.agent_id and domains.session_key.
+// A store is one memory for one agent, in a directory the host names, so the
+// columns only repeated what the file's location already said. Idempotent:
+// probes the column set rather than trusting the recorded version.
+func (s *Store) dropLegacyDomainColumns(ctx context.Context) error {
+	have, err := s.columnSet(ctx, "domains")
+	if err != nil {
+		return err
+	}
+	for _, col := range []string{"agent_id", "session_key"} {
+		if !have[col] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE domains DROP COLUMN `+col); err != nil {
+			return fmt.Errorf("drop %s: %w", col, err)
+		}
+	}
+	return nil
 }
 
 // DedupeActiveMemories retires active memories that exactly duplicate an earlier

@@ -15,7 +15,7 @@ func TestMemoryFileRefRoundTrip(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	db := s.DB()
-	d, err := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "Writing"})
+	d, err := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Writing"})
 	if err != nil {
 		t.Fatalf("create domain: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestMemoryWithoutFileRefIsEmpty(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	db := s.DB()
-	d, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "Plain"})
+	d, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Plain"})
 	m, err := s.AddMemory(ctx, db, AddMemoryParams{
 		DomainID: d.ID, Type: TypeFact, Text: "no doc",
 		Status: StatusActive, Confidence: 0.9,
@@ -66,7 +66,7 @@ func TestSupersedeCarriesFileRefForward(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	db := s.DB()
-	d, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "Writing"})
+	d, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Writing"})
 	old, _ := s.AddMemory(ctx, db, AddMemoryParams{
 		DomainID: d.ID, Type: TypeRule, Text: "Use my voice.",
 		Status: StatusActive, Confidence: 0.9,
@@ -103,7 +103,7 @@ func TestSetMemoryFileRefAttachesAndDetaches(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	db := s.DB()
-	d, _ := s.CreateDomain(ctx, db, CreateDomainParams{AgentID: "a", Name: "Writing"})
+	d, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Writing"})
 	m, err := s.AddMemory(ctx, db, AddMemoryParams{
 		DomainID: d.ID, Type: TypeRule, Text: "Use my voice.",
 		Status: StatusActive, Confidence: 0.9,

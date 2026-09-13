@@ -14,7 +14,11 @@ package store
 // 7: added the inbox table. Consolidation reads the store's own copy of the
 // conversation instead of the session archive, so the store depends on nothing
 // outside itself; consolidation_state collapses to the single InboxStateKey row.
-const schemaVersion = 7
+//
+// 8: dropped domains.agent_id and domains.session_key. A store is one memory
+// for one agent, in a directory the host owns, so neither column said anything
+// the store's location did not.
+const schemaVersion = 8
 
 // schema is the full DDL for a .cogmem.db. All statements are idempotent so
 // migrate() can run it on every open. No FTS, no vector columns.
@@ -33,8 +37,6 @@ CREATE TABLE IF NOT EXISTS meta (
 
 CREATE TABLE IF NOT EXISTS domains (
   id             TEXT PRIMARY KEY,
-  agent_id       TEXT NOT NULL,
-  session_key    TEXT NOT NULL,
   type           TEXT NOT NULL,
   name           TEXT NOT NULL,
   status         TEXT NOT NULL,

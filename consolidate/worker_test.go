@@ -87,7 +87,6 @@ func seedDomain(t *testing.T, s *store.Store) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{
-		AgentID: "alice", SessionKey: "agent:alice:main",
 		Name: "ClawEh", Status: store.StatusActive,
 		Summary: "Go gateway project",
 	})

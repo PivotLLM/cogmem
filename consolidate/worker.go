@@ -251,9 +251,8 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 	}
 
 	applied, err := Apply(ctx, w.st, out, ApplyContext{
-		AgentID: p.ID,
-		Actor:   actorSleepCycle,
-		Model:   model,
+		Actor: actorSleepCycle,
+		Model: model,
 	})
 	if err != nil {
 		w.recordRun(ctx, p, model, "error", applied, consolidated+1, lastSeq, inputTokens, outputTokens, err.Error(), "", started)

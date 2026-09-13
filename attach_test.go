@@ -81,7 +81,7 @@ func TestAttachmentFromRoutedDomain(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	db := s.DB()
-	d, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Writing"})
+	d, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Writing"})
 	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
 		DomainID: d.ID, Type: store.TypeRule, Text: "Voice guide.",
 		Status: store.StatusActive, Confidence: 0.9,
@@ -285,7 +285,7 @@ func TestDroppedRoutedDomainDoesNotAttach(t *testing.T) {
 	// Two topic domains; maxChars is tight enough that only the first section fits.
 	for _, name := range []string{"First", "Second"} {
 		d, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{
-			AgentID: "a", Name: name,
+			Name:    name,
 			Summary: strings.Repeat("summary ", 20),
 		})
 		_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
@@ -322,7 +322,7 @@ func TestAttachmentSharedByBothBlocks(t *testing.T) {
 		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/voice.md",
 	})
-	topic, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Writing"})
+	topic, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Writing"})
 	routed, _ := s.AddMemory(ctx, db, store.AddMemoryParams{
 		DomainID: topic.ID, Type: store.TypeRule, Text: "Chapter drafts follow the voice guide.",
 		Status: store.StatusActive, Confidence: 0.9,
@@ -363,7 +363,7 @@ func TestAttachmentBudgetSharedAcrossPartitions(t *testing.T) {
 		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/first.md",
 	})
-	topic, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{AgentID: "a", Name: "Writing"})
+	topic, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Writing"})
 	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
 		DomainID: topic.ID, Type: store.TypeRule, Text: "Routed rule.",
 		Status: store.StatusActive, Confidence: 0.9,
