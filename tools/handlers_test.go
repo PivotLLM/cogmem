@@ -35,7 +35,7 @@ func newCall(session string, args map[string]any) *toolspec.ToolCall {
 	if args == nil {
 		args = map[string]any{}
 	}
-	return &toolspec.ToolCall{Ctx: context.Background(), Args: args, Session: session}
+	return &toolspec.ToolCall{Ctx: context.Background(), Args: args, AgentID: "alice", Session: session}
 }
 
 func run(t *testing.T, h toolspec.ToolHandler, call *toolspec.ToolCall) *toolspec.Result {
