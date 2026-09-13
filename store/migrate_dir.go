@@ -6,11 +6,8 @@ package store
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
+	"os"
 )
-
-// DBSuffix is the filename suffix of a cogmem database.
-const DBSuffix = ".cogmem.db"
 
 // SchemaVersion is the version Open migrates a database to.
 func SchemaVersion() int { return schemaVersion }
@@ -28,41 +25,35 @@ type MigrationResult struct {
 // Migrated reports whether this store actually changed version.
 func (r MigrationResult) Migrated() bool { return r.Err == nil && r.To > r.From }
 
-// MigrateDir opens every cogmem database in dir so any pending schema migration
-// runs now, and returns one result per store.
+// Migrate opens the store in dir so any pending schema migration runs now,
+// and reports what changed. A host calls it once per agent at load.
 //
-// Without this, migration is lazy: a store is upgraded whenever its session
-// next happens to be opened — by the agent handling a message, or by someone
-// clicking that agent in the WebUI. That spreads a schema change across hours
-// of ordinary use with no moment an operator can point at and call it done, and
+// Without this, migration is lazy: a store is upgraded whenever it next
+// happens to be opened — by the agent handling a message, or by someone
+// clicking that agent in a GUI. That spreads a schema change across hours of
+// ordinary use with no moment an operator can point at and call it done, and
 // a store belonging to an agent nobody talks to that day stays on the old
-// schema indefinitely. Doing it at agent load makes the upgrade a single
-// observable event, and surfaces a database that cannot be migrated at startup
-// rather than mid-conversation.
-//
-// A failure on one store does not stop the others: the point is to learn about
-// all of them at once.
-func MigrateDir(dir string) []MigrationResult {
-	paths, err := filepath.Glob(filepath.Join(dir, "*"+DBSuffix))
-	if err != nil || len(paths) == 0 {
-		return nil
+// schema indefinitely. Doing it at load makes the upgrade a single observable
+// event, and surfaces a database that cannot be migrated at startup rather
+// than mid-conversation. A missing store is not an error: there is nothing to
+// migrate, and the result reports From and To as 0.
+func Migrate(dir string) MigrationResult {
+	path := DBPath(dir)
+	res := MigrationResult{Path: path}
+	if _, err := os.Stat(path); err != nil {
+		return res
 	}
-	out := make([]MigrationResult, 0, len(paths))
-	for _, p := range paths {
-		res := MigrationResult{Path: p, From: peekVersion(p)}
-		s, err := Open(p)
-		if err != nil {
-			res.Err = err
-			out = append(out, res)
-			continue
-		}
-		if v, verr := s.recordedVersion(context.Background()); verr == nil {
-			res.To = v
-		}
-		_ = s.Close()
-		out = append(out, res)
+	res.From = peekVersion(path)
+	s, err := Open(path)
+	if err != nil {
+		res.Err = err
+		return res
 	}
-	return out
+	if v, verr := s.recordedVersion(context.Background()); verr == nil {
+		res.To = v
+	}
+	_ = s.Close()
+	return res
 }
 
 // peekVersion reads a database's recorded schema version WITHOUT migrating it,

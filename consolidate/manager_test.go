@@ -36,7 +36,7 @@ func TestOnMessageFiresAtThreshold(t *testing.T) {
 	m.Start(context.Background())
 	defer m.Stop()
 
-	job := Job{AgentID: "a", SessionKey: "s", Workspace: "/tmp"}
+	job := Job{ID: "a", Dir: "/tmp/a/cogmem", Workspace: "/tmp/a"}
 	m.OnMessage(job) // 1
 	m.OnMessage(job) // 2
 	select {
@@ -64,11 +64,11 @@ func TestEnqueueRunsJob(t *testing.T) {
 	m.Start(context.Background())
 	defer m.Stop()
 
-	job := Job{AgentID: "a", SessionKey: "s", Workspace: "/tmp"}
+	job := Job{ID: "a", Dir: "/tmp/a/cogmem", Workspace: "/tmp/a"}
 	m.Enqueue(job, "manual")
 	select {
 	case got := <-done:
-		if got.SessionKey != "s" {
+		if got.ID != "a" {
 			t.Fatalf("got job %+v", got)
 		}
 	case <-time.After(time.Second):
@@ -97,10 +97,10 @@ func TestConcurrencyCapRespected(t *testing.T) {
 	m.Start(context.Background())
 	defer m.Stop()
 
-	// Enqueue 5 jobs on DISTINCT sessions (per-store de-dup would otherwise
-	// collapse same-session jobs).
+	// Enqueue 5 jobs on DISTINCT directories (per-directory de-dup would
+	// otherwise collapse them).
 	for i := 0; i < 5; i++ {
-		m.Enqueue(Job{SessionKey: string(rune('a' + i)), Workspace: "/tmp"}, "manual")
+		m.Enqueue(Job{ID: string(rune('a' + i)), Dir: "/tmp/" + string(rune('a'+i))}, "manual")
 	}
 
 	// Wait until at least 2 are running.
@@ -135,7 +135,7 @@ func TestPerStoreDedup(t *testing.T) {
 	m.Start(context.Background())
 	defer m.Stop()
 
-	job := Job{SessionKey: "same", Workspace: "/tmp"}
+	job := Job{ID: "same", Dir: "/tmp/same"}
 	m.Enqueue(job, "manual")
 	<-started // first run is now in-flight
 	// Subsequent enqueues for the same archive must not start a second run.

@@ -5,6 +5,7 @@ package cogmem
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 
 func TestSession_ObserveFeedsInbox(t *testing.T) {
 	ws := t.TempDir()
-	s := NewSession(SessionOptions{AgentID: "alice", SessionKey: "agent:alice:main", Workspace: ws})
+	s := NewSession(SessionOptions{ID: "alice", Dir: filepath.Join(ws, "cogmem"), Workspace: ws})
 	defer s.Close()
 	ctx := context.Background()
 	s.Observe(ctx, 7, "user", "remember the blue door")
@@ -40,7 +41,7 @@ func TestSession_NilAndEphemeralAreNoOps(t *testing.T) {
 	none.Close()
 
 	opened := false
-	sub := NewSession(SessionOptions{SessionKey: "subagent:abc", Workspace: t.TempDir(), Ephemeral: true,
+	sub := NewSession(SessionOptions{ID: "alice/sub", Dir: filepath.Join(t.TempDir(), "snap"), Ephemeral: true,
 		OnOpen: func(context.Context, *store.Store) { opened = true }})
 	defer sub.Close()
 	sub.Observe(ctx, 1, "user", "x")
@@ -54,7 +55,7 @@ func TestSession_NilAndEphemeralAreNoOps(t *testing.T) {
 
 func TestSession_OnOpenRunsOnce(t *testing.T) {
 	calls := 0
-	s := NewSession(SessionOptions{SessionKey: "agent:alice:main", Workspace: t.TempDir(),
+	s := NewSession(SessionOptions{ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem"),
 		OnOpen: func(context.Context, *store.Store) { calls++ }})
 	defer s.Close()
 	s.Store()
@@ -66,7 +67,7 @@ func TestSession_OnOpenRunsOnce(t *testing.T) {
 }
 
 func TestSession_RecallPlacesStickyInSystem(t *testing.T) {
-	s := NewSession(SessionOptions{AgentID: "alice", SessionKey: "agent:alice:main", Workspace: t.TempDir()})
+	s := NewSession(SessionOptions{ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem")})
 	defer s.Close()
 	ctx := context.Background()
 	st := s.Store()

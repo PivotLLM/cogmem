@@ -109,10 +109,10 @@ func NewWorker(st *store.Store, model ModelCaller, opts ...Option) *Worker {
 
 // RunParams identifies one consolidation run.
 type RunParams struct {
-	AgentID    string
-	SessionKey string
-	Workspace  string
-	Trigger    string // message, idle, nightly, manual
+	ID        string // label for logs and run records
+	Dir       string // the memory's directory
+	Workspace string // where the curated files and COGMEM.md are read from
+	Trigger   string // message, idle, nightly, manual
 }
 
 // RunResult reports the outcome of a single RunOnce.
@@ -133,7 +133,7 @@ const leaseName = "consolidate:" + store.InboxStateKey
 // valid result in one transaction. The watermark advances only on a successful
 // apply, and only then is the covered part of the inbox deleted.
 func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
-	owner := w.leaseOwner(p.AgentID)
+	owner := w.leaseOwner(p.ID)
 	ok, err := w.st.AcquireLease(ctx, w.st.DB(), leaseName, owner, leaseTTL)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("consolidate: acquire lease: %w", err)
@@ -181,15 +181,15 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 	// and idempotent; best-effort so a dedup error never blocks consolidation.
 	if n, derr := w.st.DedupeActiveMemories(ctx); derr != nil {
 		logger.WarnCF("cogmem", "dedupe active memories failed", map[string]any{
-			"session_key": p.SessionKey, "error": derr.Error(),
+			"id": p.ID, "error": derr.Error(),
 		})
 	} else if n > 0 {
 		logger.InfoCF("cogmem", "consolidation: retired duplicate memories", map[string]any{
-			"session_key": p.SessionKey, "retired": n,
+			"id": p.ID, "retired": n,
 		})
 	}
 
-	w.applyRetention(ctx, p.SessionKey)
+	w.applyRetention(ctx, p.ID)
 
 	in := Input{
 		Curated:      ReadCurated(p.Workspace),
@@ -251,10 +251,9 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 	}
 
 	applied, err := Apply(ctx, w.st, out, ApplyContext{
-		AgentID:    p.AgentID,
-		SessionKey: p.SessionKey,
-		Actor:      actorSleepCycle,
-		Model:      model,
+		AgentID: p.ID,
+		Actor:   actorSleepCycle,
+		Model:   model,
 	})
 	if err != nil {
 		w.recordRun(ctx, p, model, "error", applied, consolidated+1, lastSeq, inputTokens, outputTokens, err.Error(), "", started)
@@ -337,23 +336,23 @@ func (w *Worker) currentState(ctx context.Context) CurrentState {
 //
 // Best-effort and non-fatal: a purge failure must never stop the consolidation
 // run that was actually asked for.
-func (w *Worker) applyRetention(ctx context.Context, sessionKey string) {
+func (w *Worker) applyRetention(ctx context.Context, id string) {
 	if n, err := w.st.PurgeExpiredEvents(ctx, w.st.DB(), w.eventDays); err != nil {
 		logger.WarnCF("cogmem", "purge expired events failed", map[string]any{
-			"session_key": sessionKey, "error": err.Error(),
+			"id": id, "error": err.Error(),
 		})
 	} else if n > 0 {
 		logger.InfoCF("cogmem", "consolidation: deleted expired event memories", map[string]any{
-			"session_key": sessionKey, "deleted": n, "older_than_days": w.eventDays,
+			"id": id, "deleted": n, "older_than_days": w.eventDays,
 		})
 	}
 	if n, err := w.st.PurgeRetiredMemories(ctx, w.st.DB(), w.retiredDays); err != nil {
 		logger.WarnCF("cogmem", "purge retired memories failed", map[string]any{
-			"session_key": sessionKey, "error": err.Error(),
+			"id": id, "error": err.Error(),
 		})
 	} else if n > 0 {
 		logger.InfoCF("cogmem", "consolidation: deleted retired memories", map[string]any{
-			"session_key": sessionKey, "deleted": n, "retired_more_than_days_ago": w.retiredDays,
+			"id": id, "deleted": n, "retired_more_than_days_ago": w.retiredDays,
 		})
 	}
 }
@@ -403,12 +402,12 @@ func (w *Worker) dump(p RunParams, system, userJSON, raw string, applied int) {
 	_ = os.WriteFile(filepath.Join(w.debugDump, name), b, 0o644)
 }
 
-func (w *Worker) leaseOwner(agentID string) string {
+func (w *Worker) leaseOwner(label string) string {
 	id := uuid.NewString()
-	if agentID == "" {
+	if label == "" {
 		return id
 	}
-	return fmt.Sprintf("%s-%d-%s", agentID, os.Getpid(), id)
+	return fmt.Sprintf("%s-%d-%s", label, os.Getpid(), id)
 }
 
 // ParseOutput trims the raw model text, strips a leading/trailing ```json fence

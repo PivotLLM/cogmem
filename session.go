@@ -37,14 +37,18 @@ type Injection struct {
 // maxRecentTools bounds the recent-tool ring used for tool-trigger routing.
 const maxRecentTools = 8
 
-// SessionOptions describes one agent session's memory.
+// SessionOptions describes one memory and how the host wants it driven.
 type SessionOptions struct {
-	AgentID    string
-	SessionKey string
-	// Workspace is the agent workspace; the store lives at
-	// store.SessionDBPath(Workspace, SessionKey).
+	// ID labels the memory in logs and run records; an agent id, typically.
+	ID string
+	// Dir is the directory cogmem owns for this memory. The store is
+	// store.DBPath(Dir); WAL files and pre-migration snapshots sit beside it.
+	// One memory per directory: a host that wants several memories for one
+	// agent passes several directories.
+	Dir string
+	// Workspace is where consolidation reads the curated files and COGMEM.md.
 	Workspace string
-	// Ephemeral marks a throwaway session (a sub-agent working on a snapshot):
+	// Ephemeral marks a throwaway memory (a sub-agent working on a snapshot):
 	// nothing is observed into the inbox and no consolidation is scheduled.
 	Ephemeral bool
 	Settings  Settings
@@ -83,7 +87,7 @@ type Session struct {
 
 // NewSession builds a session. The store is opened lazily on first use.
 func NewSession(opt SessionOptions) *Session {
-	return &Session{opt: opt, dbPath: store.SessionDBPath(opt.Workspace, opt.SessionKey)}
+	return &Session{opt: opt, dbPath: store.DBPath(opt.Dir)}
 }
 
 // Store returns the session's store, opening it on first call. Nil when the
@@ -98,21 +102,20 @@ func (s *Session) Store() *store.Store {
 		return s.st
 	}
 	s.opened = true
-	// The store's directory is the host's sessions directory; make sure it
-	// exists so a brand-new workspace does not fail its first memory write.
+	// cogmem owns Dir; create it so a brand-new memory does not fail its first
+	// write.
 	if err := os.MkdirAll(filepath.Dir(s.dbPath), 0o755); err != nil {
 		logger.WarnCF("cogmem", "create session store directory failed", map[string]any{
-			"agent_id": s.opt.AgentID, "session_key": s.opt.SessionKey, "path": s.dbPath, "error": err.Error(),
+			"id": s.opt.ID, "path": s.dbPath, "error": err.Error(),
 		})
 		return nil
 	}
 	st, err := store.Open(s.dbPath)
 	if err != nil {
 		logger.WarnCF("cogmem", "open session store failed", map[string]any{
-			"agent_id":    s.opt.AgentID,
-			"session_key": s.opt.SessionKey,
-			"path":        s.dbPath,
-			"error":       err.Error(),
+			"id":    s.opt.ID,
+			"path":  s.dbPath,
+			"error": err.Error(),
 		})
 		return nil
 	}
@@ -139,15 +142,15 @@ func (s *Session) Observe(ctx context.Context, seq int64, role, text string) {
 	stored, err := consolidate.Observe(ctx, st, seq, role, text, s.opt.Settings.Consolidation.PerMessageChars)
 	if err != nil {
 		logger.WarnCF("cogmem", "observe message failed", map[string]any{
-			"agent_id": s.opt.AgentID, "session_key": s.opt.SessionKey, "seq": seq, "error": err.Error(),
+			"id": s.opt.ID, "seq": seq, "error": err.Error(),
 		})
 		return
 	}
 	if stored && s.opt.Manager != nil {
 		s.opt.Manager.OnMessage(consolidate.Job{
-			AgentID:    s.opt.AgentID,
-			SessionKey: s.opt.SessionKey,
-			Workspace:  s.opt.Workspace,
+			ID:        s.opt.ID,
+			Dir:       s.opt.Dir,
+			Workspace: s.opt.Workspace,
 		})
 	}
 }
@@ -208,7 +211,7 @@ func (s *Session) Recall(ctx context.Context, routeText string) []Injection {
 	})
 	if err != nil {
 		logger.WarnCF("cogmem", "memory compose failed", map[string]any{
-			"agent_id": s.opt.AgentID, "session_key": s.opt.SessionKey, "error": err.Error(),
+			"id": s.opt.ID, "error": err.Error(),
 		})
 	}
 	if res.Attachments != "" || res.RoutedAttachments != "" {
@@ -216,8 +219,7 @@ func (s *Session) Recall(ctx context.Context, routeText string) []Injection {
 		// paid for once, routed bytes ride with the turn and are paid for
 		// every time. One combined figure hides which is which.
 		logger.DebugCF("cogmem", "attached documents injected", map[string]any{
-			"agent_id":     s.opt.AgentID,
-			"session_key":  s.opt.SessionKey,
+			"id":           s.opt.ID,
 			"sticky_bytes": len(res.Attachments),
 			"routed_bytes": len(res.RoutedAttachments),
 		})

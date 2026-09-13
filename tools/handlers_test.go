@@ -23,7 +23,7 @@ const testSession = "chan:123"
 func buildHandlers(t *testing.T) (map[string]toolspec.ToolHandler, string) {
 	t.Helper()
 	ws := t.TempDir()
-	defs := Definitions(Host{Workspace: ws})
+	defs := Definitions(Host{Dir: filepath.Join(ws, "cogmem"), Workspace: ws})
 	m := make(map[string]toolspec.ToolHandler, len(defs))
 	for _, d := range defs {
 		m[d.Name] = d.Handler
@@ -336,7 +336,7 @@ func TestStatusAndConsolidate(t *testing.T) {
 func TestConsolidateForwardsToHost(t *testing.T) {
 	ws := t.TempDir()
 	var gotAgent, gotSession string
-	defs := Definitions(Host{Workspace: ws, Consolidate: func(agentID, sessionKey string) {
+	defs := Definitions(Host{Dir: filepath.Join(ws, "cogmem"), Workspace: ws, Consolidate: func(agentID, sessionKey string) {
 		gotAgent, gotSession = agentID, sessionKey
 	}})
 	h := map[string]toolspec.ToolHandler{}
@@ -436,12 +436,18 @@ func TestExportMemoryRoundTrips(t *testing.T) {
 	}
 }
 
-func TestEmptySessionErrors(t *testing.T) {
-	h, _ := buildHandlers(t)
+// A host that configured no memory directory (a deps-free catalogue
+// enumeration, or an agent without memory) gets an error result from every
+// tool, never a store created somewhere by accident.
+func TestEmptyDirErrors(t *testing.T) {
+	h := map[string]toolspec.ToolHandler{}
+	for _, d := range Definitions(Host{}) {
+		h[d.Name] = d.Handler
+	}
 	for _, name := range []string{"domain_get", "memory_search", "memory_create", "status", "domain_create"} {
-		res := run(t, h[name], newCall("", map[string]any{"id": "dXXXXX", "query": "x", "type": "project", "text": "t", "name": "n"}))
+		res := run(t, h[name], newCall(testSession, map[string]any{"id": "dXXXXX", "query": "x", "type": "fact", "text": "t", "name": "n"}))
 		if !res.IsError {
-			t.Fatalf("%s: expected error for empty session, got: %s", name, res.ForLLM)
+			t.Fatalf("%s: expected error with no memory directory, got: %s", name, res.ForLLM)
 		}
 	}
 }

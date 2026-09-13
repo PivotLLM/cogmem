@@ -3,23 +3,13 @@
 
 package store
 
-import (
-	"path/filepath"
-	"strings"
-)
+import "path/filepath"
 
-// SanitizeSessionKey converts a session key to a safe filename component, using
-// the same rule as memory.sanitizeKey (':' '/' '\' → '_') so a session's
-// .cogmem.db sits beside its .archive.db.
-func SanitizeSessionKey(key string) string {
-	s := strings.ReplaceAll(key, ":", "_")
-	s = strings.ReplaceAll(s, "/", "_")
-	s = strings.ReplaceAll(s, "\\", "_")
-	return s
-}
+// DBFileName is the database file cogmem keeps inside the directory the host
+// gives it. The host owns the choice of directory; cogmem owns everything in
+// it: the database, its WAL and shared-memory files, and the pre-migration
+// snapshots taken on upgrade.
+const DBFileName = "cogmem.db"
 
-// SessionDBPath returns the per-session cogmem database path:
-// <workspace>/sessions/<sanitized-key>.cogmem.db
-func SessionDBPath(workspace, sessionKey string) string {
-	return filepath.Join(workspace, "sessions", SanitizeSessionKey(sessionKey)+".cogmem.db")
-}
+// DBPath returns the database path for a cogmem directory.
+func DBPath(dir string) string { return filepath.Join(dir, DBFileName) }

@@ -9,10 +9,9 @@
 // follow object_verb: domain_* (containers), memory_* (items), plus the
 // subsystem tools status/explain/consolidate/export.
 //
-// Every tool is session-scoped: it operates on the per-session .cogmem.db
-// resolved from Host.Workspace and ToolCall.Session. The tools are a thin
-// layer over the store package — the typed API a GUI or CLI uses directly — so
-// the two cannot disagree.
+// Every tool operates on the store in Host.Dir. The tools are a thin layer over
+// the store package — the typed API a GUI or CLI uses directly — so the two
+// cannot disagree.
 package tools
 
 import (
@@ -23,9 +22,12 @@ import (
 
 // Host is what a tool needs from the application embedding cognitive memory.
 type Host struct {
-	// Workspace is the agent workspace; the per-session store lives under
-	// <Workspace>/sessions. Empty during a deps-free catalogue enumeration, in
+	// Dir is the directory cogmem owns for this memory; the store is
+	// store.DBPath(Dir). Empty during a deps-free catalogue enumeration, in
 	// which case handlers refuse to touch disk.
+	Dir string
+	// Workspace is the agent workspace: the export tool writes into
+	// <Workspace>/files. Empty disables export.
 	Workspace string
 	// CheckAttachment validates that ref is a markdown file the agent may read
 	// and returns its size. Nil means attachments are not supported: a memory
@@ -46,8 +48,6 @@ func (h Host) checkAttachment(ref string) (int64, error) {
 
 // Definitions returns the cognitive-memory tool definitions bound to h.
 func Definitions(h Host) []toolspec.ToolDefinition {
-	workspace := h.Workspace
-
 	def := func(name, desc string, params []toolspec.Parameter, allow bool, hf handlerFunc) toolspec.ToolDefinition {
 		return toolspec.ToolDefinition{
 			Name:          name,
@@ -56,7 +56,7 @@ func Definitions(h Host) []toolspec.ToolDefinition {
 			Category:      "memory",
 			SessionScoped: true,
 			DefaultAllow:  toolspec.Allow(allow),
-			Handler:       wrap(workspace, hf),
+			Handler:       wrap(h.Dir, hf),
 		}
 	}
 
@@ -170,7 +170,7 @@ func Definitions(h Host) []toolspec.ToolDefinition {
 
 		def("export",
 			"Dump the agent's entire memory — every domain and memory, with all their fields — to files/MEMORY_EXPORT.yaml, and report the path and counts. The format can be read back in, so it works as a backup or to hand your memory to another assistant.",
-			nil, true, exportMemory),
+			nil, true, exportWith(h)),
 
 		def("status",
 			"Report memory status: database path, the last background update, and how many domains and memories are held.",

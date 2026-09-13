@@ -74,10 +74,10 @@ func sampleMessages() []Message {
 
 func params() RunParams {
 	return RunParams{
-		AgentID:    "alice",
-		SessionKey: "agent:alice:main",
-		Workspace:  "/nonexistent-workspace",
-		Trigger:    "message",
+		ID:        "alice",
+		Dir:       "/nonexistent-dir",
+		Workspace: "/nonexistent-workspace",
+		Trigger:   "message",
 	}
 }
 

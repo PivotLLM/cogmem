@@ -10,25 +10,27 @@ import (
 	"time"
 
 	"github.com/PivotLLM/cogmem/logger"
-	"github.com/PivotLLM/cogmem/store"
 )
 
-// Job identifies a single session whose inbox may need consolidation. It
-// carries everything a WorkerFactory needs to build a Worker; the manager is
-// otherwise decoupled from the store and provider packages.
+// Job identifies one memory whose inbox may need consolidation. It carries
+// everything a WorkerFactory needs to build a Worker; the manager is otherwise
+// decoupled from the store and provider packages.
 type Job struct {
-	AgentID    string
-	SessionKey string
-	Workspace  string
+	// ID labels the memory in logs and run records (an agent id, typically).
+	ID string
+	// Dir is the memory's directory; the store is at store.DBPath(Dir).
+	Dir string
+	// Workspace is where the curated files and COGMEM.md are read from.
+	Workspace string
 }
 
-// key is the per-store identity the manager de-duplicates on: two jobs for the
-// same session database are the same job.
-func (j Job) key() string { return store.SessionDBPath(j.Workspace, j.SessionKey) }
+// key is the identity the manager de-duplicates on: two jobs for the same
+// directory are the same job.
+func (j Job) key() string { return j.Dir }
 
 // WorkerFactory builds a Worker for a Job. The host supplies it: it opens the
-// cogmem store at SessionDBPath and selects the agent's ModelCaller. Returning
-// an error skips the job (logged, not fatal).
+// store at store.DBPath(job.Dir) and selects the ModelCaller. Returning an
+// error skips the job (logged, not fatal).
 type WorkerFactory func(Job) (*Worker, error)
 
 // managerOptions tune the Manager's triggers and concurrency.
@@ -190,7 +192,7 @@ func (m *Manager) Stop() {
 // does not call this for ephemeral sub-agent sessions, whose memory is a
 // throwaway snapshot).
 func (m *Manager) OnMessage(job Job) {
-	if job.SessionKey == "" {
+	if job.Dir == "" {
 		return
 	}
 	key := job.key()
@@ -220,7 +222,7 @@ func (m *Manager) OnMessage(job Job) {
 // Non-blocking: if the queue is full the job is dropped with a WARN (a later
 // trigger will re-enqueue).
 func (m *Manager) Enqueue(job Job, trigger string) {
-	if job.SessionKey == "" {
+	if job.Dir == "" {
 		return
 	}
 	key := job.key()
@@ -236,15 +238,15 @@ func (m *Manager) Enqueue(job Job, trigger string) {
 	select {
 	case m.queue <- queued{job: job, trigger: trigger}:
 		logger.DebugCF("cogmem", "consolidation job enqueued", map[string]any{
-			"agent_id":    job.AgentID,
-			"session_key": job.SessionKey,
-			"trigger":     trigger,
+			"id":      job.ID,
+			"dir":     job.Dir,
+			"trigger": trigger,
 		})
 	default:
 		logger.WarnCF("cogmem", "consolidation queue full; dropping job", map[string]any{
-			"agent_id":    job.AgentID,
-			"session_key": job.SessionKey,
-			"trigger":     trigger,
+			"id":      job.ID,
+			"dir":     job.Dir,
+			"trigger": trigger,
 		})
 	}
 }
@@ -264,9 +266,9 @@ func (m *Manager) dispatchLoop(ctx context.Context) {
 			if m.inflight[q.job.key()] {
 				m.mu.Unlock()
 				logger.DebugCF("cogmem", "consolidation job skipped; run already in flight", map[string]any{
-					"agent_id":    q.job.AgentID,
-					"session_key": q.job.SessionKey,
-					"trigger":     q.trigger,
+					"id":      q.job.ID,
+					"dir":     q.job.Dir,
+					"trigger": q.trigger,
 				})
 				continue // already running; the in-flight run drains More itself
 			}
@@ -307,16 +309,16 @@ func (m *Manager) runJob(ctx context.Context, j Job, trigger string) {
 	w, err := m.factory(j)
 	if err != nil {
 		logger.WarnCF("cogmem", "consolidation worker factory failed", map[string]any{
-			"agent_id":    j.AgentID,
-			"session_key": j.SessionKey,
-			"error":       err.Error(),
+			"id":    j.ID,
+			"dir":   j.Dir,
+			"error": err.Error(),
 		})
 		return
 	}
 	logger.DebugCF("cogmem", "consolidation run starting", map[string]any{
-		"agent_id":    j.AgentID,
-		"session_key": j.SessionKey,
-		"trigger":     trigger,
+		"id":      j.ID,
+		"dir":     j.Dir,
+		"trigger": trigger,
 	})
 	for {
 		select {
@@ -327,32 +329,32 @@ func (m *Manager) runJob(ctx context.Context, j Job, trigger string) {
 		default:
 		}
 		res, err := w.RunOnce(ctx, RunParams{
-			AgentID:    j.AgentID,
-			SessionKey: j.SessionKey,
-			Workspace:  j.Workspace,
-			Trigger:    trigger,
+			ID:        j.ID,
+			Dir:       j.Dir,
+			Workspace: j.Workspace,
+			Trigger:   trigger,
 		})
 		if err != nil {
 			logger.WarnCF("cogmem", "consolidation run failed", map[string]any{
-				"agent_id":    j.AgentID,
-				"session_key": j.SessionKey,
-				"trigger":     trigger,
-				"status":      res.Status,
-				"error":       err.Error(),
+				"id":      j.ID,
+				"dir":     j.Dir,
+				"trigger": trigger,
+				"status":  res.Status,
+				"error":   err.Error(),
 			})
 			return
 		}
 		// Log every outcome — including idle/busy, which previously left no trace
 		// in the log or the run table, making no-op runs impossible to diagnose.
 		logger.InfoCF("cogmem", "consolidation run finished", map[string]any{
-			"agent_id":    j.AgentID,
-			"session_key": j.SessionKey,
-			"trigger":     trigger,
-			"status":      res.Status,
-			"applied":     res.Applied,
-			"seq_start":   res.SeqStart,
-			"seq_end":     res.SeqEnd,
-			"more":        res.More,
+			"id":        j.ID,
+			"dir":       j.Dir,
+			"trigger":   trigger,
+			"status":    res.Status,
+			"applied":   res.Applied,
+			"seq_start": res.SeqStart,
+			"seq_end":   res.SeqEnd,
+			"more":      res.More,
 		})
 		if res.Status == "busy" {
 			return // another owner holds the lease; let it drain.

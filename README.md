@@ -159,8 +159,23 @@ records a raw parser error from a flaky model.
 - Call `Session.Observe` after every stored message with the transcript seq,
   and `Session.Recall` before every model call.
 
-Storage is one SQLite database, `cogmem.db`, stored in a directory specified by
-the host. 
+## Storage
+
+The host gives cogmem a directory and cogmem owns everything in it: one SQLite
+database, `cogmem.db` (pure Go, `modernc.org/sqlite`, migrated on open with a
+pre-migration snapshot kept beside it), plus the WAL and shared-memory files
+SQLite needs. The directory is passed as `SessionOptions.Dir` for the runner
+interface and `tools.Host.Dir` for the tools; `store.DBPath(dir)` names the
+file for anything that opens it directly, and `store.Migrate(dir)` upgrades it
+eagerly at load.
+
+One directory is one memory. cogmem does not know or care what a session is:
+a host that wants one memory per assistant passes one directory per assistant,
+and a host that ever wants several memories for one assistant passes several
+directories. An identifier (`SessionOptions.ID`) travels with the memory only
+so log lines and consolidation run records can say which one they are about.
+Because the directory is self-contained, it can be backed up, copied to a new
+assistant, or kept while everything else about the assistant is deleted.
 
 ## Copyright and license
 

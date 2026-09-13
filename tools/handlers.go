@@ -31,19 +31,16 @@ func fileSuffix(ref string) string {
 // lifecycle and turns errors into error Results.
 type handlerFunc func(s *store.Store, call *toolspec.ToolCall) (string, error)
 
-// wrap builds a toolspec.ToolHandler that resolves the per-session database from
-// the workspace + ToolCall.Session, opens it (ensuring the parent dir exists),
-// runs h, and closes the store. A missing session yields an error Result.
-func wrap(workspace string, h handlerFunc) toolspec.ToolHandler {
+// wrap builds a toolspec.ToolHandler that opens the store in dir (creating the
+// directory if needed), runs h, and closes the store. An empty dir means the
+// host has no memory for this agent, and yields an error Result.
+func wrap(dir string, h handlerFunc) toolspec.ToolHandler {
 	return func(call *toolspec.ToolCall) (*toolspec.Result, error) {
-		if call.Session == "" {
-			return errResult("cognitive memory requires an active session", nil), nil
+		if dir == "" {
+			return errResult("cognitive memory is unavailable (no memory directory configured)", nil), nil
 		}
-		if workspace == "" {
-			return errResult("cognitive memory is unavailable (no workspace configured)", nil), nil
-		}
-		dbPath := store.SessionDBPath(workspace, call.Session)
-		if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		dbPath := store.DBPath(dir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return errResult("failed to prepare memory store directory", err), nil
 		}
 		s, err := store.Open(dbPath)
@@ -451,14 +448,21 @@ func updateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 
 // exportMemory writes the agent's entire active memory as one Markdown document
 // to files/MEMORY_EXPORT.yaml (its writable area) and reports the path and counts.
-func exportMemory(s *store.Store, call *toolspec.ToolCall) (string, error) {
+func exportWith(h Host) handlerFunc {
+	return func(s *store.Store, call *toolspec.ToolCall) (string, error) {
+		return exportMemory(s, call, h.Workspace)
+	}
+}
+
+func exportMemory(s *store.Store, call *toolspec.ToolCall, workspace string) (string, error) {
+	if workspace == "" {
+		return "", errors.New("export is unavailable: the host configured no workspace to write into")
+	}
 	doc, nDomains, nMemories, err := renderFullExport(call.Ctx, s)
 	if err != nil {
 		return "", err
 	}
-	// The store lives at <workspace>/sessions/<key>.cogmem.db; recover <workspace>
-	// to write the export into the agent's read/write files/ directory.
-	workspace := filepath.Dir(filepath.Dir(s.Path()))
+	// Write into the agent's read/write files/ directory.
 	outDir := filepath.Join(workspace, "files")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to prepare export directory: %w", err)
