@@ -321,6 +321,10 @@ func TestStatusAndConsolidate(t *testing.T) {
 	if !strings.Contains(res.ForLLM, "Last consolidation run: none") {
 		t.Fatalf("unexpected status: %s", res.ForLLM)
 	}
+	// A fresh store holds the seeded General domain and nothing else.
+	if !strings.Contains(res.ForLLM, "Domains: 1 active (0 archived); memories: 0 active (0 retired)\n") {
+		t.Fatalf("status lacks the counts line: %s", res.ForLLM)
+	}
 	if strings.Contains(res.ForLLM, "Pending") {
 		t.Fatalf("status still reports pending memories, which no longer exist: %s", res.ForLLM)
 	}

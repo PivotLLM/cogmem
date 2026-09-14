@@ -69,10 +69,10 @@ func TestUnknownIDs(t *testing.T) {
 	hs.fail(t, "memory_attach", map[string]any{"id": "hZZZZZ"}, "hZZZZZ not found")
 	hs.fail(t, "memory_create", map[string]any{"domain_id": "dZZZZZ", "type": "fact", "text": "x"}, "dZZZZZ not found")
 	hs.fail(t, "domain_migrate", map[string]any{"from": "dZZZZZ", "to": real}, "dZZZZZ not found")
-	// CURRENT BEHAVIOUR, flagged: when the DESTINATION is unknown the error
-	// names the source id, because mapErr is given `from` for both lookups.
-	hs.fail(t, "domain_migrate", map[string]any{"from": real, "to": "dYYYYY"}, real+" not found")
+	// An unknown destination is named as such, not blamed on the source.
+	hs.fail(t, "domain_migrate", map[string]any{"from": real, "to": "dYYYYY"}, "dYYYYY not found")
 	hs.fail(t, "domain_migrate", map[string]any{"from": real, "to": real}, "cogmem: from and to domains are the same")
+	hs.fail(t, "memory_forget", map[string]any{"query": "x", "domain_id": "dZZZZZ"}, "dZZZZZ not found")
 
 	s := hs.store(t)
 	if d, err := s.GetDomain(ctx, s.DB(), real, false); err != nil || d.Status != store.StatusActive || d.Version != 1 {
@@ -113,10 +113,8 @@ func TestForgetWithDomainFilterAndNothingRetired(t *testing.T) {
 	if got := hs.ok(t, "memory_forget", map[string]any{"query": "nothing here"}); got != `No active memories matched "nothing here"; nothing retired.` {
 		t.Errorf("no match = %q", got)
 	}
-	// An unknown domain filter is not validated: it simply matches nothing.
-	if got := hs.ok(t, "memory_forget", map[string]any{"query": "shared phrase", "domain_id": "dZZZZZ"}); got != `No active memories matched "shared phrase"; nothing retired.` {
-		t.Errorf("unknown domain filter = %q", got)
-	}
+	// An unknown domain filter is an error, not a silent "nothing matched".
+	hs.fail(t, "memory_forget", map[string]any{"query": "shared phrase", "domain_id": "dZZZZZ"}, "dZZZZZ not found")
 
 	// Unfiltered: the remaining two go, the event included, ids sorted.
 	ids := []string{one, ev}
@@ -128,6 +126,34 @@ func TestForgetWithDomainFilterAndNothingRetired(t *testing.T) {
 	}
 	if got := hs.ok(t, "memory_search", map[string]any{"query": "shared phrase", "include_events": true}); got != `No active memories match "shared phrase".` {
 		t.Errorf("search after forget = %q", got)
+	}
+}
+
+// memory_forget retires every match, not a first page of them: a query
+// matching more memories than any search limit retires them all and reports
+// the true count.
+func TestForgetRetiresEveryMatch(t *testing.T) {
+	hs := newHarness(t, nil)
+	domainID := hs.createDomain(t, map[string]any{"name": "Bulk"})
+	s := hs.store(t)
+	const n = 105
+	for i := 0; i < n; i++ {
+		if _, err := s.AddMemory(ctx, s.DB(), store.AddMemoryParams{
+			DomainID: domainID, Type: store.TypeFact, Text: fmt.Sprintf("bulk item %03d", i),
+			Status: store.StatusActive, Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("add %d: %v", i, err)
+		}
+	}
+	got := hs.ok(t, "memory_forget", map[string]any{"query": "bulk item"})
+	if !strings.HasPrefix(got, fmt.Sprintf("Retired %d memories: ", n)) {
+		t.Errorf("forget = %.60q..., want all %d retired", got, n)
+	}
+	if left, _ := s.ListMemories(ctx, s.DB(), domainID, store.StatusActive); len(left) != 0 {
+		t.Errorf("%d memories still active after forget", len(left))
+	}
+	if retired, _ := s.ListMemories(ctx, s.DB(), domainID, store.StatusRetired); len(retired) != n {
+		t.Errorf("%d memories retired, want %d", len(retired), n)
 	}
 }
 
@@ -177,73 +203,62 @@ func TestSearchLimitAndConfidenceArePassed(t *testing.T) {
 	}
 }
 
-// Wrongly-typed arguments are coerced to the default, silently.
-//
-// CURRENT BEHAVIOUR, flagged: a model that sends include_events as "true",
-// limit as "5", confidence as "0.3", set_sticky as "true" or set_blockers as
-// "x" gets no error — the value is dropped and the default used. Each case
-// below pins what happens today.
-func TestWrongTypedArgsAreSilentlyCoerced(t *testing.T) {
+// A wrongly-typed argument is an error naming the argument and the type it
+// wants, never a silent default: a model that sends include_events as "true"
+// or set_sticky as "true" would otherwise get the opposite of what it asked
+// for. Nothing is changed by a rejected call; an absent argument still takes
+// its default.
+func TestWrongTypedArgsAreRejected(t *testing.T) {
 	hs := newHarness(t, nil)
-	domainID := hs.createDomain(t, map[string]any{"name": "Coerce", "keyword_triggers": []any{"keep me"}})
+	domainID := hs.createDomain(t, map[string]any{"name": "Typed", "keyword_triggers": []any{"keep me"}})
 	hs.createMemory(t, map[string]any{"domain_id": domainID, "type": "fact", "text": "widget standing"})
 	hs.createMemory(t, map[string]any{"domain_id": domainID, "type": "event", "text": "widget shipped"})
 	s := hs.store(t)
 
-	// include_events: "true" is not a bool → false; the event stays hidden
-	// (and no fallback fires, because a standing memory matched).
-	got := hs.ok(t, "memory_search", map[string]any{"query": "widget", "include_events": "true"})
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"memory_search", map[string]any{"query": "widget", "include_events": "true"}, "include_events must be a boolean"},
+		{"memory_search", map[string]any{"query": "widget", "include_events": 1}, "include_events must be a boolean"},
+		{"memory_search", map[string]any{"query": "widget", "limit": "5"}, "limit must be an integer"},
+		{"memory_search", map[string]any{"query": "widget", "limit": true}, "limit must be an integer"},
+		{"memory_search", map[string]any{"query": "widget", "limit": 5.5}, "limit must be an integer"},
+		{"memory_create", map[string]any{"domain_id": domainID, "type": "fact", "text": "conf as string", "confidence": "0.3"}, "confidence must be a number"},
+		{"domain_update", map[string]any{"id": domainID, "set_sticky": "true"}, "set_sticky must be a boolean"},
+		{"domain_update", map[string]any{"id": domainID, "set_blockers": "x"}, "set_blockers must be a list of strings"},
+		{"domain_update", map[string]any{"id": domainID, "set_next_actions": []any{"ok", 2}}, "set_next_actions must be a list of strings"},
+		{"domain_update", map[string]any{"id": domainID, "set_constraints": "x"}, "set_constraints must be a list of strings"},
+		{"domain_update", map[string]any{"id": domainID, "set_keyword_triggers": "x"}, "set_keyword_triggers must be a list of strings"},
+		{"domain_create", map[string]any{"name": "StringSticky", "sticky": "true"}, "sticky must be a boolean"},
+		{"domain_create", map[string]any{"name": "StringKeywords", "keyword_triggers": "x"}, "keyword_triggers must be a list of strings"},
+	} {
+		hs.fail(t, tc.tool, tc.args, tc.want)
+	}
+
+	// The rejected calls changed nothing: the domain is as created, no memory
+	// was stored and no domain was created.
+	d, _ := s.GetDomain(ctx, s.DB(), domainID, false)
+	if d.Version != 1 || d.Sticky() || d.KeywordTriggers != "keep me" || len(d.State.Blockers) != 0 {
+		t.Errorf("a rejected update changed the domain: %+v", d)
+	}
+	if hits, _ := s.SearchMemories(ctx, s.DB(), "conf as string", 10, true); len(hits) != 0 {
+		t.Errorf("a rejected create stored the memory: %+v", hits)
+	}
+	if doms, _ := s.ListDomains(ctx, s.DB()); len(doms) != 2 {
+		t.Errorf("domains = %d, want 2 (General + Typed): a rejected create made one", len(doms))
+	}
+
+	// Absent arguments still take their defaults: events excluded, limit 20,
+	// confidence 0.9, sticky off.
+	got := hs.ok(t, "memory_search", map[string]any{"query": "widget"})
 	if !strings.HasPrefix(got, "1 active memories") || strings.Contains(got, "widget shipped") {
-		t.Errorf("include_events as a string:\n%s", got)
+		t.Errorf("search with no include_events:\n%s", got)
 	}
-
-	// limit: "5" is not a number → default 20; six matches all come back.
-	for i := 0; i < 6; i++ {
-		hs.createMemory(t, map[string]any{"domain_id": domainID, "type": "fact", "text": fmt.Sprintf("many %d", i)})
-	}
-	if got := hs.ok(t, "memory_search", map[string]any{"query": "many", "limit": "5"}); !strings.HasPrefix(got, "6 active memories") {
-		t.Errorf("limit as a string:\n%s", got)
-	}
-
-	// confidence: "0.3" is not a number → default 0.9.
-	id := hs.createMemory(t, map[string]any{"domain_id": domainID, "type": "fact", "text": "conf as string", "confidence": "0.3"})
+	id := hs.createMemory(t, map[string]any{"domain_id": domainID, "type": "fact", "text": "default confidence"})
 	if m, _ := s.GetMemory(ctx, s.DB(), id); m.Confidence != 0.9 {
-		t.Errorf("confidence as a string stored %v, documented behaviour is the 0.9 default", m.Confidence)
-	}
-
-	// set_blockers: "x" is not a list → ignored; alone, that is "nothing to update".
-	hs.fail(t, "domain_update", map[string]any{"id": domainID, "set_blockers": "x"},
-		"nothing to update (set_name, set_summary, set_sticky, set_triggers, set_keyword_triggers, or a list field)")
-
-	// set_keyword_triggers: "x" is not a list → treated as an EMPTY list, which
-	// clears the keyword triggers that were there.
-	hs.ok(t, "domain_update", map[string]any{"id": domainID, "set_keyword_triggers": "x"})
-	if d, _ := s.GetDomain(ctx, s.DB(), domainID, false); d.KeywordTriggers != "" {
-		t.Errorf("keyword triggers = %q after a string set_keyword_triggers; documented behaviour is cleared", d.KeywordTriggers)
-	}
-
-	// set_sticky: "true" is not a bool → false: the update SUCCEEDS and sets
-	// sticky OFF, the opposite of what was asked.
-	hs.ok(t, "domain_update", map[string]any{"id": domainID, "set_sticky": true})
-	hs.ok(t, "domain_update", map[string]any{"id": domainID, "set_sticky": "true"})
-	if d, _ := s.GetDomain(ctx, s.DB(), domainID, false); d.Sticky() {
-		t.Error("set_sticky as a string: documented behaviour is sticky cleared, got sticky")
-	}
-	stringSticky := hs.createDomain(t, map[string]any{"name": "StringSticky", "sticky": "true"})
-	if d, _ := s.GetDomain(ctx, s.DB(), stringSticky, false); d.Sticky() {
-		t.Error("domain_create sticky as a string: documented behaviour is not sticky")
-	}
-
-	// set_summary: "" cannot clear a summary — an empty string is "not
-	// provided", so alone it is "nothing to update".
-	hs.ok(t, "domain_update", map[string]any{"id": domainID, "set_summary": "has one"})
-	hs.fail(t, "domain_update", map[string]any{"id": domainID, "set_summary": ""},
-		"nothing to update (set_name, set_summary, set_sticky, set_triggers, set_keyword_triggers, or a list field)")
-
-	// set_name: "" IS applied — the domain is renamed to the empty string.
-	hs.ok(t, "domain_update", map[string]any{"id": domainID, "set_name": ""})
-	if d, _ := s.GetDomain(ctx, s.DB(), domainID, false); d.Name != "" {
-		t.Errorf("set_name \"\": name = %q; documented behaviour is an empty name", d.Name)
+		t.Errorf("default confidence = %v, want 0.9", m.Confidence)
 	}
 }
 

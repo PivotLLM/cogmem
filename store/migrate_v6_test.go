@@ -243,8 +243,8 @@ func TestPreMigrationSnapshotIsUsable(t *testing.T) {
 	_ = snap.Close()
 
 	// The snapshot can be opened as a store. Doing so migrates IT (it is a v5
-	// database), which is fine for recovery — the data comes through — but note
-	// that it writes a nested snapshot, <snap>.pre-v5.db, beside it.
+	// database), which is what recovery needs — the data comes through — and
+	// must NOT write a nested <snap>.pre-v5.db beside it.
 	rs, err := Open(path + ".pre-v5.db")
 	if err != nil {
 		t.Fatalf("open snapshot as a store: %v", err)
@@ -264,8 +264,8 @@ func TestPreMigrationSnapshotIsUsable(t *testing.T) {
 	if doms, _ := rs.ListDomains(ctx, rs.DB()); len(doms) != 1 || doms[0].Name != "General" || !doms[0].Sticky() {
 		t.Errorf("migrated snapshot domains = %+v, want the one sticky General", doms)
 	}
-	if _, err := os.Stat(path + ".pre-v5.db.pre-v5.db"); err != nil {
-		t.Errorf("opening the snapshot as a store is expected to leave a nested snapshot: %v", err)
+	if _, err := os.Stat(path + ".pre-v5.db.pre-v5.db"); err == nil {
+		t.Error("opening the snapshot as a store wrote a nested snapshot beside it")
 	}
 }
 

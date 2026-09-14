@@ -201,9 +201,12 @@ func Unmarshal(data []byte) (Document, error) {
 type ImportMode string
 
 const (
-	// ImportMerge adds what is missing and leaves everything else alone. A
-	// domain is matched by name, a memory by its text within that domain, so
-	// importing the same document twice is a no-op.
+	// ImportMerge adds what is missing and brings what is matched up to the
+	// document. A domain is matched by name (whatever its status) and takes
+	// the document's fields; a memory is matched by its text within that
+	// domain, and one the document marks retired is retired. Nothing is ever
+	// removed, and importing the same document twice is a no-op the second
+	// time.
 	ImportMerge ImportMode = "merge"
 	// ImportReplace empties the store first, making a document a true restore
 	// point: what comes back is exactly what was exported, and anything learned
@@ -215,8 +218,10 @@ const (
 type ImportResult struct {
 	DomainsCreated  int `json:"domains_created"`
 	DomainsMatched  int `json:"domains_matched"`
+	DomainsUpdated  int `json:"domains_updated"` // matched, and changed to match the document
 	MemoriesCreated int `json:"memories_created"`
 	MemoriesSkipped int `json:"memories_skipped"`
+	MemoriesRetired int `json:"memories_retired"` // matched active, retired by the document
 }
 
 // Import loads a document into st.
@@ -246,10 +251,19 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode)
 		if name == "" {
 			continue
 		}
-		target, err := st.DomainByName(ctx, st.DB(), name)
+		// Matched whatever its status: an archived domain is still the domain
+		// the document names, and creating a second one beside it would
+		// duplicate every memory in it on every merge.
+		target, err := st.DomainByNameAny(ctx, st.DB(), name)
 		switch {
 		case err == nil:
 			res.DomainsMatched++
+			if p, changed := domainPatch(target, d); changed {
+				if err := st.UpdateDomain(ctx, st.DB(), target.ID, p); err != nil {
+					return res, fmt.Errorf("cogmem: import: update domain %q: %w", name, err)
+				}
+				res.DomainsUpdated++
+			}
 		default:
 			target, err = st.CreateDomain(ctx, st.DB(), store.CreateDomainParams{
 				Sticky:  d.Sticky,
@@ -271,14 +285,14 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode)
 		}
 
 		// Existing text in this domain, so a merge does not duplicate.
-		seen := map[string]bool{}
+		seen := map[string]store.Memory{}
 		if mode == ImportMerge {
 			cur, err := st.ListMemories(ctx, st.DB(), target.ID)
 			if err != nil {
 				return res, fmt.Errorf("cogmem: import: read %s: %w", target.ID, err)
 			}
 			for _, m := range cur {
-				seen[strings.TrimSpace(m.Text)] = true
+				seen[strings.TrimSpace(m.Text)] = m
 			}
 		}
 		for _, m := range d.Memories {
@@ -286,15 +300,24 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode)
 			if text == "" {
 				continue
 			}
-			if seen[text] {
+			if cur, ok := seen[text]; ok {
+				// The document retiring a memory that is active here is the one
+				// change a merge applies to an existing memory: it is what a
+				// document edited to retire something is for.
+				if memoryStatus(m.Status) == store.StatusRetired && cur.Status == store.StatusActive {
+					if err := st.RetireMemory(ctx, st.DB(), cur.ID, retireReason(m)); err != nil {
+						return res, fmt.Errorf("cogmem: import: retire %s: %w", cur.ID, err)
+					}
+					res.MemoriesRetired++
+					continue
+				}
 				res.MemoriesSkipped++
 				continue
 			}
-			seen[text] = true
 			// Always added active, then retired if the document says so. Retiring
-			// through RetireMemory is what carries the reason across and writes the
-			// audit event; inserting straight into the retired status would drop
-			// both, so a restored memory would lose why it was retired.
+			// through RetireMemory is what carries the reason across; inserting
+			// straight into the retired status would drop it, so a restored memory
+			// would lose why it was retired.
 			added, err := st.AddMemory(ctx, st.DB(), store.AddMemoryParams{
 				DomainID:   target.ID,
 				Type:       memoryType(m.Type),
@@ -307,12 +330,9 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode)
 			if err != nil {
 				return res, fmt.Errorf("cogmem: import: add memory to %s: %w", target.ID, err)
 			}
+			seen[text] = added
 			if memoryStatus(m.Status) == store.StatusRetired {
-				reason := m.RetireReason
-				if reason == "" {
-					reason = "retired before export"
-				}
-				if err := st.RetireMemory(ctx, st.DB(), added.ID, reason); err != nil {
+				if err := st.RetireMemory(ctx, st.DB(), added.ID, retireReason(m)); err != nil {
 					return res, fmt.Errorf("cogmem: import: retire %s: %w", added.ID, err)
 				}
 			}
@@ -320,6 +340,63 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode)
 		}
 	}
 	return res, nil
+}
+
+// domainPatch is the update that brings a matched store domain cur to what the
+// document says, and whether there is one. Comparing first is what keeps a
+// merge idempotent: an unchanged domain is not rewritten, so its version and
+// the stable revision stay put. Triggers are compared in their normalized
+// form, since that is what the store keeps.
+func domainPatch(cur store.Domain, d Domain) (store.UpdateDomainParams, bool) {
+	var p store.UpdateDomainParams
+	changed := false
+	if cur.Summary != d.Summary {
+		p.Summary, changed = &d.Summary, true
+	}
+	if cur.Sticky() != d.Sticky {
+		p.Sticky, changed = &d.Sticky, true
+	}
+	if st := domainStatus(d.Status); cur.Status != st {
+		p.Status, changed = &st, true
+	}
+	want := store.Domain{Triggers: d.Triggers, KeywordTriggers: d.KeywordTriggers}
+	if !equalStrings(cur.TriggerTokens(), want.TriggerTokens()) {
+		p.Triggers, changed = &d.Triggers, true
+	}
+	if !equalStrings(cur.KeywordPhrases(), want.KeywordPhrases()) {
+		p.KeywordTriggers, changed = &d.KeywordTriggers, true
+	}
+	if !equalStrings(cur.State.Blockers, d.Blockers) ||
+		!equalStrings(cur.State.NextActions, d.NextActions) ||
+		!equalStrings(cur.State.Constraints, d.Constraints) {
+		state := cur.State
+		state.Blockers, state.NextActions, state.Constraints = d.Blockers, d.NextActions, d.Constraints
+		p.State, changed = &state, true
+	}
+	return p, changed
+}
+
+// equalStrings reports whether two lists hold the same strings in the same
+// order, treating nil and empty alike: a stored empty list and an absent
+// document field are the same thing.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// retireReason is the reason recorded for a memory the document retires.
+func retireReason(m Memory) string {
+	if m.RetireReason == "" {
+		return "retired before export"
+	}
+	return m.RetireReason
 }
 
 // domainStatus maps an imported domain status onto a known one, defaulting to

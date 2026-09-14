@@ -21,7 +21,8 @@ type ApplyContext struct {
 // Apply writes a *validated* Output to the store in a single transaction:
 // assigning ids to created domains, mapping tmp_ids referenced by hooks,
 // applying every op, and appending an audit event per op. It returns the number
-// of operations applied. Call Output.Validate before Apply.
+// of operations applied, which is 0 on error: the transaction rolled back, so
+// nothing was applied. Call Output.Validate before Apply.
 func Apply(ctx context.Context, st *store.Store, out Output, ac ApplyContext) (int, error) {
 	applied := 0
 	err := st.WithTx(ctx, func(tx *sql.Tx) error {
@@ -79,7 +80,7 @@ func Apply(ctx context.Context, st *store.Store, out Output, ac ApplyContext) (i
 				if err := st.ArchiveDomain(ctx, tx, op.ID); err != nil {
 					return err
 				}
-				if err := logOp(ctx, st, tx, ac, "update", op.ID, "", op.Reason, op.Evidence); err != nil {
+				if err := logOp(ctx, st, tx, ac, "archive", op.ID, "", op.Reason, op.Evidence); err != nil {
 					return err
 				}
 			}
@@ -130,7 +131,10 @@ func Apply(ctx context.Context, st *store.Store, out Output, ac ApplyContext) (i
 		}
 		return nil
 	})
-	return applied, err
+	if err != nil {
+		return 0, err
+	}
+	return applied, nil
 }
 
 // memoryParams builds the store write for one model operation.

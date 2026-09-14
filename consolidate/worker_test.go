@@ -683,6 +683,9 @@ func TestRunOnceApplyFailureRecordsError(t *testing.T) {
 	if run.Status != "error" || !strings.Contains(run.Error, "already exists") {
 		t.Fatalf("run = %+v, want status error with the store's message", run)
 	}
+	if run.OpsApplied != 0 {
+		t.Fatalf("run.OpsApplied = %d after a rolled-back apply, want 0", run.OpsApplied)
+	}
 	after, err := s.ListDomains(ctx, s.DB())
 	if err != nil {
 		t.Fatalf("list domains: %v", err)

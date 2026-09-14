@@ -430,9 +430,10 @@ func TestLongTextIsWrittenAsALiteralBlock(t *testing.T) {
 	}
 }
 
-// Merge adds what is missing and touches nothing else, so importing the same
-// document twice adds nothing to an active domain and an import can never
-// destroy anything.
+// Merge adds what is missing and never removes anything, and it is
+// idempotent: importing the same document twice does nothing the second
+// time — no domain created or updated, no memory created or retired, and the
+// stable revision untouched.
 func TestMergeIsAdditiveAndRepeatable(t *testing.T) {
 	ctx := context.Background()
 	src := newStore(t, "m-src.cogmem.db")
@@ -452,48 +453,51 @@ func TestMergeIsAdditiveAndRepeatable(t *testing.T) {
 	}
 	// Craft and the auto-seeded General already exist and are matched by name;
 	// Standing and Old are created. A merge that created a second "Craft" would
-	// double every memory in it.
-	if first.DomainsMatched != 2 || first.DomainsCreated != 2 {
-		t.Errorf("first merge domains matched/created = %d/%d, want 2/2", first.DomainsMatched, first.DomainsCreated)
-	}
-	if first.MemoriesCreated != 8 || first.MemoriesSkipped != 0 {
-		t.Errorf("first merge memories created/skipped = %d/%d, want 8/0", first.MemoriesCreated, first.MemoriesSkipped)
+	// double every memory in it. Craft is brought up to the document (it was
+	// created bare here); General is identical in both stores and left alone.
+	want := ImportResult{DomainsMatched: 2, DomainsCreated: 2, DomainsUpdated: 1, MemoriesCreated: 8}
+	if first != want {
+		t.Errorf("first merge = %+v, want %+v", first, want)
 	}
 	if _, err := dst.GetMemory(ctx, dst.DB(), kept.ID); err != nil {
 		t.Errorf("merge destroyed an existing memory: %v", err)
+	}
+	if craft, _ := dst.GetDomain(ctx, dst.DB(), d.ID, false); craft.Summary != "how to write" || craft.Triggers != "file_write" {
+		t.Errorf("matched Craft was not brought up to the document: %+v", craft)
+	}
+	before, _ := Export(ctx, dst)
+	rev, err := dst.StableRev(ctx)
+	if err != nil {
+		t.Fatalf("stable rev: %v", err)
 	}
 
 	second, err := Import(ctx, dst, doc, ImportMerge)
 	if err != nil {
 		t.Fatalf("second merge: %v", err)
 	}
-	// CURRENT BEHAVIOUR, flagged: a domain is matched by DomainByName, which
-	// only sees ACTIVE domains, so the archived "Old" is not found on the second
-	// pass and is created again — along with its one memory. Every merge of a
-	// document holding an archived domain adds another copy of it. The three
-	// active domains are matched and their seven memories all skipped.
-	if second.DomainsMatched != 3 || second.DomainsCreated != 1 {
-		t.Errorf("second merge domains matched/created = %d/%d, want 3/1 (archived domain re-created; see comment)",
-			second.DomainsMatched, second.DomainsCreated)
+	// Every domain is matched, the archived "Old" included: matching only
+	// active domains would re-create it, and its memory, on every merge.
+	want = ImportResult{DomainsMatched: 4, MemoriesSkipped: 8}
+	if second != want {
+		t.Errorf("second merge = %+v, want %+v", second, want)
 	}
-	if second.MemoriesCreated != 1 || second.MemoriesSkipped != 7 {
-		t.Errorf("second merge memories created/skipped = %d/%d, want 1/7 (see comment)",
-			second.MemoriesCreated, second.MemoriesSkipped)
+	if archived, _ := dst.ListDomains(ctx, dst.DB(), store.StatusArchived); len(archived) != 1 {
+		t.Errorf("archived domains after two merges = %d, want 1", len(archived))
 	}
-	archived, _ := dst.ListDomains(ctx, dst.DB(), store.StatusArchived)
-	if len(archived) != 2 {
-		t.Errorf("archived domains after two merges = %d, want 2 — documents the duplicate", len(archived))
+	if after, _ := Export(ctx, dst); !reflect.DeepEqual(before.Domains, after.Domains) {
+		t.Errorf("second merge changed the store:\n before %+v\n after  %+v", before.Domains, after.Domains)
+	}
+	if rev2, _ := dst.StableRev(ctx); rev2 != rev {
+		t.Errorf("second merge bumped stable_rev %d -> %d", rev, rev2)
 	}
 }
 
-// Merging into a domain that already exists leaves the DOMAIN alone: only its
-// memories are added to. The document's summary, stickiness, triggers and
-// state lists are not applied.
-//
-// CURRENT BEHAVIOUR, flagged: a document edited to fix a domain's summary or
-// triggers and merged back changes nothing about that domain. Only replace
-// mode, which drops the store first, picks the domain fields up.
-func TestMergeDoesNotUpdateMatchedDomainFields(t *testing.T) {
+// Merging into a domain that already exists brings the domain up to the
+// document — summary, stickiness, status, triggers, keyword triggers and the
+// state lists — as well as adding its memories, so a document edited to fix a
+// domain and merged back takes effect. The name keeps the store's spelling.
+// A second merge of the same document finds nothing to change.
+func TestMergeAppliesDocumentDomainFields(t *testing.T) {
 	ctx := context.Background()
 	dst := newStore(t, "mf-dst.cogmem.db")
 	existing, err := dst.CreateDomain(ctx, dst.DB(), store.CreateDomainParams{
@@ -519,27 +523,56 @@ func TestMergeDoesNotUpdateMatchedDomainFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
-	if res.DomainsMatched != 1 || res.DomainsCreated != 0 || res.MemoriesCreated != 1 {
-		t.Fatalf("result = %+v, want the domain matched and one memory added", res)
+	if want := (ImportResult{DomainsMatched: 1, DomainsUpdated: 1, MemoriesCreated: 1}); res != want {
+		t.Fatalf("result = %+v, want %+v", res, want)
 	}
 	got, err := dst.GetDomain(ctx, dst.DB(), existing.ID, true)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Name != "Craft" || got.Summary != "mine" || got.Sticky() || got.Triggers != "file_read" || got.KeywordTriggers != "" {
-		t.Errorf("merge changed domain fields: name=%q summary=%q sticky=%v triggers=%q keywords=%q",
-			got.Name, got.Summary, got.Sticky(), got.Triggers, got.KeywordTriggers)
+	if got.Name != "Craft" || got.Summary != "from the document" || !got.Sticky() || got.Status != store.StatusActive ||
+		got.Triggers != "file_write" || got.KeywordTriggers != "style guide" {
+		t.Errorf("domain after merge: name=%q summary=%q sticky=%v status=%q triggers=%q keywords=%q",
+			got.Name, got.Summary, got.Sticky(), got.Status, got.Triggers, got.KeywordTriggers)
 	}
-	if !reflect.DeepEqual(got.State, store.DomainState{Blockers: []string{"my blocker"}}) {
-		t.Errorf("merge changed domain state: %+v", got.State)
+	wantState := store.DomainState{
+		Blockers: []string{"document blocker"}, NextActions: []string{"document action"}, Constraints: []string{"document constraint"},
+	}
+	if !reflect.DeepEqual(got.State, wantState) {
+		t.Errorf("domain state after merge = %+v, want %+v", got.State, wantState)
 	}
 	if len(got.Memories) != 1 || got.Memories[0].Text != "added by merge" || got.Memories[0].Origin != store.OriginUser || got.Memories[0].Confidence != 0.5 {
 		t.Errorf("merged memory = %+v", got.Memories)
 	}
-	// The doc's version was 1 on create; only the memory add touched it, and
-	// AddMemory does not bump the domain version.
-	if got.Version != 1 {
-		t.Errorf("domain version = %d, want 1 (no domain update applied)", got.Version)
+	// One update: version 1 on create, 2 after the merge applied the fields.
+	if got.Version != 2 {
+		t.Errorf("domain version = %d, want 2 (one update applied)", got.Version)
+	}
+
+	// The same document again changes nothing: the fields already match, so
+	// no update is written and the version stays.
+	res, err = Import(ctx, dst, doc, ImportMerge)
+	if err != nil {
+		t.Fatalf("second merge: %v", err)
+	}
+	if want := (ImportResult{DomainsMatched: 1, MemoriesSkipped: 1}); res != want {
+		t.Errorf("second merge = %+v, want %+v", res, want)
+	}
+	if again, _ := dst.GetDomain(ctx, dst.DB(), existing.ID, false); again.Version != 2 {
+		t.Errorf("second merge bumped the version to %d", again.Version)
+	}
+
+	// Archiving through the document works too, and an archived domain is
+	// still matched (never re-created) by a later merge.
+	doc.Domains[0].Status = "archived"
+	if res, err = Import(ctx, dst, doc, ImportMerge); err != nil || res.DomainsUpdated != 1 || res.DomainsCreated != 0 {
+		t.Fatalf("archiving merge = %+v err=%v, want one domain updated", res, err)
+	}
+	if arch, _ := dst.GetDomain(ctx, dst.DB(), existing.ID, false); arch.Status != store.StatusArchived {
+		t.Errorf("domain status after archiving merge = %q", arch.Status)
+	}
+	if res, err = Import(ctx, dst, doc, ImportMerge); err != nil || res.DomainsMatched != 1 || res.DomainsCreated != 0 || res.DomainsUpdated != 0 {
+		t.Errorf("merge onto the archived domain = %+v err=%v, want matched and unchanged", res, err)
 	}
 }
 
@@ -584,11 +617,11 @@ func TestMergeDedupIsTrimmedAndCaseSensitive(t *testing.T) {
 }
 
 // A memory the document says is retired, but which is active in the store, is
-// left active: dedup matches on text and skips the memory, status and all.
-//
-// CURRENT BEHAVIOUR, flagged: a document edited to retire a memory and merged
-// back does not retire it. Retiring has to be done in the store.
-func TestMergeLeavesActiveMemoryActiveWhenDocumentRetiresIt(t *testing.T) {
+// retired with the document's reason: a document edited to retire a memory
+// and merged back takes effect. A second merge finds it already retired and
+// skips it; a memory retired in the store but active in the document is left
+// retired, since a merge never restores.
+func TestMergeRetiresActiveMemoryWhenDocumentRetiresIt(t *testing.T) {
 	ctx := context.Background()
 	dst := newStore(t, "ret-dst.cogmem.db")
 	d, _ := dst.CreateDomain(ctx, dst.DB(), store.CreateDomainParams{Name: "Craft"})
@@ -613,13 +646,28 @@ func TestMergeLeavesActiveMemoryActiveWhenDocumentRetiresIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
-	if res.MemoriesSkipped != 1 || res.MemoriesCreated != 0 {
-		t.Fatalf("result = %+v, want the memory skipped", res)
+	if want := (ImportResult{DomainsMatched: 1, MemoriesRetired: 1}); res != want {
+		t.Fatalf("result = %+v, want %+v", res, want)
 	}
 	got, _ := dst.GetMemory(ctx, dst.DB(), m.ID)
-	if got.Status != store.StatusActive || got.RetireReason != nil {
-		t.Errorf("memory = status %q reason %v; expected current behaviour is: left active (see comment)",
-			got.Status, got.RetireReason)
+	if got.Status != store.StatusRetired || got.RetireReason == nil || *got.RetireReason != "superseded" {
+		t.Errorf("memory = status %q reason %v, want retired/superseded", got.Status, got.RetireReason)
+	}
+
+	res, err = Import(ctx, dst, doc, ImportMerge)
+	if err != nil {
+		t.Fatalf("second merge: %v", err)
+	}
+	if want := (ImportResult{DomainsMatched: 1, MemoriesSkipped: 1}); res != want {
+		t.Errorf("second merge = %+v, want %+v", res, want)
+	}
+
+	doc.Domains[0].Memories[0].Status = "active"
+	if res, err = Import(ctx, dst, doc, ImportMerge); err != nil || res.MemoriesSkipped != 1 || res.MemoriesCreated != 0 {
+		t.Fatalf("merge of an active document memory onto a retired one = %+v err=%v, want skipped", res, err)
+	}
+	if got, _ = dst.GetMemory(ctx, dst.DB(), m.ID); got.Status != store.StatusRetired {
+		t.Errorf("merge restored a retired memory: %+v", got)
 	}
 }
 

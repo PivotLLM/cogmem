@@ -8,6 +8,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,53 +71,106 @@ func argStr(call *toolspec.ToolCall, key string) string {
 	return ""
 }
 
-func argBool(call *toolspec.ToolCall, key string, def bool) bool {
-	if v, ok := call.Args[key].(bool); ok {
-		return v
-	}
-	return def
-}
-
-func argInt(call *toolspec.ToolCall, key string, def int) int {
-	switch v := call.Args[key].(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	case int64:
-		return int(v)
-	}
-	return def
-}
-
-func argFloat(call *toolspec.ToolCall, key string, def float64) float64 {
-	switch v := call.Args[key].(type) {
-	case float64:
-		return v
-	case int:
-		return float64(v)
-	case int64:
-		return float64(v)
-	}
-	return def
-}
-
-func argStrSlice(call *toolspec.ToolCall, key string) ([]string, bool) {
+// argBool returns the boolean argument key, or def when it is absent. A value
+// of any other type is an error naming the argument: a model that sends
+// "true" as a string must be told, not silently given the default (which for
+// a flag is the opposite of what it asked for).
+func argBool(call *toolspec.ToolCall, key string, def bool) (bool, error) {
 	raw, ok := call.Args[key]
 	if !ok {
-		return nil, false
+		return def, nil
+	}
+	v, ok := raw.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	return v, nil
+}
+
+// argInt returns the integer argument key, or def when it is absent. JSON
+// delivers numbers as float64, but callers in Go hand over ints too, so any
+// numeric type is accepted; anything else is an error naming the argument.
+func argInt(call *toolspec.ToolCall, key string, def int) (int, error) {
+	raw, ok := call.Args[key]
+	if !ok {
+		return def, nil
+	}
+	f, ok := asFloat(raw)
+	if !ok || f != math.Trunc(f) {
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	return int(f), nil
+}
+
+// argFloat returns the numeric argument key, or def when it is absent; any
+// numeric type is accepted (see argInt), anything else is an error.
+func argFloat(call *toolspec.ToolCall, key string, def float64) (float64, error) {
+	raw, ok := call.Args[key]
+	if !ok {
+		return def, nil
+	}
+	f, ok := asFloat(raw)
+	if !ok {
+		return 0, fmt.Errorf("%s must be a number", key)
+	}
+	return f, nil
+}
+
+// asFloat converts any Go numeric type to float64.
+func asFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+// argStrSlice returns the string-list argument key and whether it was present.
+// A present value that is not a list of strings is an error naming the
+// argument, rather than an empty list that would clear what was there.
+func argStrSlice(call *toolspec.ToolCall, key string) ([]string, bool, error) {
+	raw, ok := call.Args[key]
+	if !ok {
+		return nil, false, nil
+	}
+	if ss, ok := raw.([]string); ok {
+		return ss, true, nil
 	}
 	arr, ok := raw.([]any)
 	if !ok {
-		return nil, false
+		return nil, false, fmt.Errorf("%s must be a list of strings", key)
 	}
 	out := make([]string, 0, len(arr))
 	for _, e := range arr {
-		if s, ok := e.(string); ok {
-			out = append(out, s)
+		s, ok := e.(string)
+		if !ok {
+			return nil, false, fmt.Errorf("%s must be a list of strings", key)
 		}
+		out = append(out, s)
 	}
-	return out, true
+	return out, true, nil
 }
 
 // --- handlers ---
@@ -163,8 +217,14 @@ func search(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	if query == "" {
 		return "", errors.New("query is required")
 	}
-	limit := argInt(call, "limit", 20)
-	includeEvents := argBool(call, "include_events", false)
+	limit, err := argInt(call, "limit", 20)
+	if err != nil {
+		return "", err
+	}
+	includeEvents, err := argBool(call, "include_events", false)
+	if err != nil {
+		return "", err
+	}
 	hooks, err := s.SearchMemories(call.Ctx, s.DB(), query, limit, includeEvents)
 	if err != nil {
 		return "", err
@@ -205,6 +265,11 @@ func search(s *store.Store, call *toolspec.ToolCall) (string, error) {
 func listDomains(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	var statuses []store.Status
 	if st := argStr(call, "status"); st != "" {
+		// The enum in the definition is advisory to the model; the value must
+		// be checked here, or an unknown one silently lists nothing.
+		if st != string(store.StatusActive) && st != string(store.StatusArchived) {
+			return "", fmt.Errorf("status must be one of: active, archived")
+		}
 		statuses = append(statuses, store.Status(st))
 	}
 	domains, err := s.ListDomains(call.Ctx, s.DB(), statuses...)
@@ -308,6 +373,10 @@ func remember(s *store.Store, call *toolspec.ToolCall, host Host) (string, error
 			"operational (your own housekeeping) or event (something that happened "+
 			"at a point in time)", mtype)
 	}
+	confidence, err := argFloat(call, "confidence", 0.9)
+	if err != nil {
+		return "", err
+	}
 
 	// Validate the attachment before storing anything: a pointer the agent cannot
 	// read must fail here, in front of the user, rather than degrade every later
@@ -364,7 +433,7 @@ func remember(s *store.Store, call *toolspec.ToolCall, host Host) (string, error
 		Type:       store.MemoryType(mtype),
 		Text:       text,
 		Status:     store.StatusActive,
-		Confidence: argFloat(call, "confidence", 0.9),
+		Confidence: confidence,
 		Origin:     store.OriginChat,
 		FileRef:    fileRef,
 	})
@@ -392,30 +461,45 @@ func updateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 		return "", mapErr(err, id)
 	}
 	p := store.UpdateDomainParams{}
+	// A domain cannot be nameless, so an empty set_name is refused rather than
+	// applied.
 	if _, ok := call.Args["set_name"]; ok {
 		v := argStr(call, "set_name")
+		if v == "" {
+			return "", errors.New("set_name must not be empty")
+		}
 		p.Name = &v
 	}
-	if v := argStr(call, "set_summary"); v != "" {
+	// set_summary present (even empty) replaces the summary; empty clears it.
+	if _, ok := call.Args["set_summary"]; ok {
+		v := argStr(call, "set_summary")
 		p.Summary = &v
 	}
 	if _, ok := call.Args["set_sticky"]; ok {
-		v := argBool(call, "set_sticky", false)
+		v, err := argBool(call, "set_sticky", false)
+		if err != nil {
+			return "", err
+		}
 		p.Sticky = &v
 	}
 	state := cur.State
 	changedState := false
-	if v, ok := argStrSlice(call, "set_blockers"); ok {
-		state.Blockers = v
-		changedState = true
-	}
-	if v, ok := argStrSlice(call, "set_next_actions"); ok {
-		state.NextActions = v
-		changedState = true
-	}
-	if v, ok := argStrSlice(call, "set_constraints"); ok {
-		state.Constraints = v
-		changedState = true
+	for _, l := range []struct {
+		key  string
+		dest *[]string
+	}{
+		{"set_blockers", &state.Blockers},
+		{"set_next_actions", &state.NextActions},
+		{"set_constraints", &state.Constraints},
+	} {
+		v, ok, err := argStrSlice(call, l.key)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			*l.dest = v
+			changedState = true
+		}
 	}
 	if changedState {
 		p.State = &state
@@ -426,8 +510,11 @@ func updateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 		p.Triggers = &v
 	}
 	// set_keyword_triggers present (even empty) replaces the keyword list.
-	if _, ok := call.Args["set_keyword_triggers"]; ok {
-		kw, _ := argStrSlice(call, "set_keyword_triggers")
+	kw, ok, err := argStrSlice(call, "set_keyword_triggers")
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		v := strings.Join(kw, ",")
 		p.KeywordTriggers = &v
 	}
@@ -521,9 +608,16 @@ func createDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	if name == "" {
 		return "", errors.New("name is required")
 	}
-	kw, _ := argStrSlice(call, "keyword_triggers")
+	sticky, err := argBool(call, "sticky", false)
+	if err != nil {
+		return "", err
+	}
+	kw, _, err := argStrSlice(call, "keyword_triggers")
+	if err != nil {
+		return "", err
+	}
 	d, err := s.CreateDomain(call.Ctx, s.DB(), store.CreateDomainParams{
-		Sticky:          argBool(call, "sticky", false),
+		Sticky:          sticky,
 		Name:            name,
 		Status:          store.StatusActive,
 		Summary:         argStr(call, "summary"),
@@ -544,6 +638,11 @@ func migrateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	to := argStr(call, "to")
 	if from == "" || to == "" {
 		return "", errors.New("from and to domain ids are required")
+	}
+	// The store reports a missing domain without saying which; look the
+	// destination up first so the error names the id that is actually unknown.
+	if _, err := s.GetDomain(call.Ctx, s.DB(), to, false); err != nil {
+		return "", mapErr(err, to)
 	}
 	n, err := s.MigrateDomain(call.Ctx, s.DB(), from, to)
 	if err != nil {
@@ -569,17 +668,21 @@ func forget(s *store.Store, call *toolspec.ToolCall) (string, error) {
 		return "", errors.New("query is required")
 	}
 	domainFilter := argStr(call, "domain_id")
-	// Events included: forgetting is about removing something the user asked to
-	// be rid of, and an event is as forgettable as anything else.
-	hooks, err := s.SearchMemories(call.Ctx, s.DB(), query, 100, true)
+	if domainFilter != "" {
+		if _, err := s.GetDomain(call.Ctx, s.DB(), domainFilter, false); err != nil {
+			return "", mapErr(err, domainFilter)
+		}
+	}
+	// Every match, uncapped: a forget that quietly stopped at a page boundary
+	// would report success while leaving the rest in place. Events included:
+	// forgetting is about removing something the user asked to be rid of, and
+	// an event is as forgettable as anything else.
+	hooks, err := s.MatchActiveMemories(call.Ctx, s.DB(), query, domainFilter)
 	if err != nil {
 		return "", err
 	}
 	var retired []string
 	for _, h := range hooks {
-		if domainFilter != "" && h.DomainID != domainFilter {
-			continue
-		}
 		if err := s.RetireMemory(call.Ctx, s.DB(), h.ID, "forget: "+query); err != nil {
 			return "", err
 		}
@@ -611,6 +714,13 @@ func statusWith(h Host) handlerFunc {
 func status(s *store.Store, call *toolspec.ToolCall, h Host) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Cognitive memory database: %s (healthy)\n", s.Path())
+
+	c, err := s.Counts(call.Ctx, s.DB())
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(&b, "Domains: %d active (%d archived); memories: %d active (%d retired)\n",
+		c.ActiveDomains, c.ArchivedDomains, c.ActiveMemories, c.RetiredMemories)
 
 	run, ok, err := s.LastRun(call.Ctx, s.DB())
 	if err != nil {

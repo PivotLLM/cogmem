@@ -73,16 +73,10 @@ func TestTwoStoresOnOneFileShareWrites(t *testing.T) {
 	}
 }
 
-// Open sets its pragmas on ONE pooled connection. database/sql opens more
-// under concurrent load, and those carry SQLite's defaults: no busy_timeout
-// (a contended write fails at once with SQLITE_BUSY) and foreign_keys off.
-//
-// CURRENT BEHAVIOUR, flagged as a product issue: the fix belongs in Open
-// (a DSN with _pragma=busy_timeout(...)&_pragma=foreign_keys(1), or a pool
-// capped at one connection). This test pins what happens today so the fix
-// is visible when it lands; TestConcurrentWritersDoNotError caps the pool
-// itself so it can test contention between handles in the meantime.
-func TestPooledConnectionsDoNotCarryPragmas(t *testing.T) {
+// Open passes its pragmas through the DSN, so every connection database/sql
+// opens under load carries busy_timeout and foreign_keys — not only the first.
+// Two connections held at once force a second physical connection.
+func TestEveryPooledConnectionCarriesPragmas(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	first, err := s.DB().Conn(ctx)
@@ -112,23 +106,17 @@ func TestPooledConnectionsDoNotCarryPragmas(t *testing.T) {
 	if bt1 != 5000 || fk1 != 1 {
 		t.Errorf("first connection busy_timeout=%d foreign_keys=%d, want 5000/1", bt1, fk1)
 	}
-	if bt2 != 0 || fk2 != 0 {
-		t.Errorf("second connection busy_timeout=%d foreign_keys=%d; the documented "+
-			"current behaviour is 0/0 — if Open now sets pragmas per connection, "+
-			"update this test and drop the pool cap in TestConcurrentWritersDoNotError", bt2, fk2)
+	if bt2 != 5000 || fk2 != 1 {
+		t.Errorf("second connection busy_timeout=%d foreign_keys=%d, want 5000/1", bt2, fk2)
 	}
 }
 
 // Concurrent writers through two handles and many goroutines all succeed:
 // SQLite serialises them behind busy_timeout rather than failing with BUSY.
-//
-// Each handle is capped to its one pragma-bearing connection (see
-// TestPooledConnectionsDoNotCarryPragmas); the contention under test is the
-// real one, between the two handles on the file.
+// The pools are left at their defaults, so the contention is both between the
+// two handles on the file and between pooled connections within each handle.
 func TestConcurrentWritersDoNotError(t *testing.T) {
 	a, b, _ := openPair(t)
-	a.DB().SetMaxOpenConns(1)
-	b.DB().SetMaxOpenConns(1)
 	ctx := context.Background()
 	d, err := a.CreateDomain(ctx, a.DB(), CreateDomainParams{Name: "Hot"})
 	if err != nil {

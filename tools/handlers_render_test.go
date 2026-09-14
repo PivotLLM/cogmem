@@ -210,6 +210,18 @@ func TestDomainUpdateEveryField(t *testing.T) {
 		t.Error("set_sticky=false left the domain sticky")
 	}
 
+	// An empty set_summary clears the summary, like the other set_* fields;
+	// an empty set_name is refused, since a domain cannot be nameless.
+	hs.ok(t, "domain_update", map[string]any{"id": domainID, "set_summary": ""})
+	if d, _ = s.GetDomain(ctx, s.DB(), domainID, false); d.Summary != "" {
+		t.Errorf("set_summary \"\" left the summary %q", d.Summary)
+	}
+	hs.fail(t, "domain_update", map[string]any{"id": domainID, "set_name": ""}, "set_name must not be empty")
+	hs.fail(t, "domain_update", map[string]any{"id": domainID, "set_name": "  "}, "set_name must not be empty")
+	if d, _ = s.GetDomain(ctx, s.DB(), domainID, false); d.Name != "Project X" {
+		t.Errorf("a rejected empty rename changed the name to %q", d.Name)
+	}
+
 	hs.fail(t, "domain_update", map[string]any{"id": domainID},
 		"nothing to update (set_name, set_summary, set_sticky, set_triggers, set_keyword_triggers, or a list field)")
 	hs.createDomain(t, map[string]any{"name": "Other"})
@@ -280,8 +292,8 @@ func TestCreateWithDomainHintLandsInHintedDomain(t *testing.T) {
 }
 
 // domain_create with sticky=true makes a sticky domain, and domain_list marks
-// it; the list honours the status filter, and an unknown status value lists
-// nothing rather than failing.
+// it; the list honours the status filter, and an unknown status value is
+// refused with the allowed values named.
 func TestDomainCreateStickyAndList(t *testing.T) {
 	hs := newHarness(t, nil)
 	got := hs.ok(t, "domain_create", map[string]any{"name": "Always", "sticky": true, "summary": "always on"})
@@ -332,12 +344,10 @@ func TestDomainCreateStickyAndList(t *testing.T) {
 		t.Errorf("active list = %q", got)
 	}
 
-	// CURRENT BEHAVIOUR, flagged: the status enum is advisory. A value outside
-	// it is passed to the store as-is, matches nothing, and the caller is
-	// told "No domains." rather than that the filter was invalid.
-	if got := hs.ok(t, "domain_list", map[string]any{"status": "bogus"}); got != "No domains." {
-		t.Errorf("bogus status = %q, want the documented \"No domains.\"", got)
-	}
+	// A status outside the enum is an error naming the allowed values, not an
+	// empty listing that looks like "nothing archived".
+	hs.fail(t, "domain_list", map[string]any{"status": "bogus"}, "status must be one of: active, archived")
+	hs.fail(t, "domain_list", map[string]any{"status": "retired"}, "status must be one of: active, archived")
 }
 
 // domain_get renders the header with sticky/status/version, the summary,
@@ -393,11 +403,8 @@ func TestDomainGetRendersEverything(t *testing.T) {
 	hs.fail(t, "domain_get", map[string]any{"id": "dZZZZZ"}, "dZZZZZ not found")
 }
 
-// status renders the last consolidation run once one is recorded.
-//
-// CURRENT BEHAVIOUR, flagged: the tool description promises "how many
-// domains and memories are held" and the handler reports neither. The last
-// assertion pins that so the report line can be added deliberately.
+// status renders the counts of what is held, by status, and the last
+// consolidation run once one is recorded.
 func TestStatusRendersLastRun(t *testing.T) {
 	hs := newHarness(t, nil)
 	s := hs.store(t)
@@ -407,19 +414,23 @@ func TestStatusRendersLastRun(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("record run: %v", err)
 	}
+	// General plus one created domain, one archived; one active memory, one
+	// retired.
 	hs.createDomain(t, map[string]any{"name": "Counted"})
+	archived := hs.createDomain(t, map[string]any{"name": "Archived"})
+	hs.ok(t, "domain_archive", map[string]any{"id": archived})
 	hs.createMemory(t, map[string]any{"type": "fact", "text": "counted too"})
+	retired := hs.createMemory(t, map[string]any{"type": "fact", "text": "retired"})
+	hs.ok(t, "memory_retire", map[string]any{"id": retired, "reason": "counted as retired"})
 
 	want := fmt.Sprintf("Cognitive memory database: %s (healthy)\n"+
+		"Domains: 2 active (1 archived); memories: 1 active (1 retired)\n"+
 		"Last consolidation run: run-1 (trigger=manual, status=ok, ops=3) at %s\n"+
 		"Consolidation worker: not running\n",
 		store.DBPath(hs.dir), started.Format("2006-01-02 15:04:05"))
 	got := hs.ok(t, "status", nil)
 	if got != want {
 		t.Errorf("status =\n%s\nwant\n%s", got, want)
-	}
-	if strings.Contains(got, "domain") || strings.Contains(got, "memories") {
-		t.Errorf("status now reports counts; update this test and the flag in the report:\n%s", got)
 	}
 
 	// A later run replaces the line: the newest by start time is reported.

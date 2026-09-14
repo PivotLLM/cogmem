@@ -349,3 +349,18 @@ func scanMemory(sc scanner) (Memory, error) {
 	h.UpdatedAt = timeUnix(updatedAt)
 	return h, nil
 }
+
+// MatchActiveMemories returns every active memory whose text contains term
+// (case-insensitive), events included, optionally restricted to one domain.
+// Unlike SearchMemories there is no cap: this is the read for an operation
+// that must reach every match, such as forgetting.
+func (s *Store) MatchActiveMemories(ctx context.Context, q DBTX, term, domainID string) ([]Memory, error) {
+	query := memorySelect + ` WHERE status=? AND lower(text) LIKE ?`
+	args := []any{string(StatusActive), "%" + strings.ToLower(term) + "%"}
+	if domainID != "" {
+		query += ` AND domain_id=?`
+		args = append(args, domainID)
+	}
+	query += ` ORDER BY id`
+	return s.queryMemories(ctx, q, query, args...)
+}

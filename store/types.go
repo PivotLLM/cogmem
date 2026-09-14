@@ -162,7 +162,7 @@ func (e Evidence) IsZero() bool { return e.SeqStart == 0 && e.SeqEnd == 0 }
 // Event is one row of the append-only audit ledger.
 type Event struct {
 	ID         string
-	Type       string // create, update, retire, merge, reject, conflict_resolved, gap
+	Type       string // create, update, archive, retire, merge, reject, conflict_resolved, gap
 	DomainID   string
 	MemoryID   string
 	OldJSON    string

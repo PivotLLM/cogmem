@@ -326,12 +326,11 @@ func TestApplyArchiveDomain(t *testing.T) {
 	if got.Status != store.StatusArchived || got.ArchivedAt == nil {
 		t.Fatalf("domain = status %q archived_at %v, want archived with a time", got.Status, got.ArchivedAt)
 	}
-	// apply.go logs an archive with event type "update", so the assertion is
-	// on the domain id and reason rather than the type.
 	events := listEvents(t, s)
-	if len(events) != 1 || events[0].DomainID != d.ID || events[0].Reason != "project shipped and closed" ||
+	if len(events) != 1 || events[0].Type != "archive" || events[0].DomainID != d.ID ||
+		events[0].Reason != "project shipped and closed" ||
 		events[0].Evidence != `{"seq_start":3,"seq_end":4}` || events[0].Actor != "sleep_cycle" {
-		t.Fatalf("events = %+v, want one for %s with the op's reason", events, d.ID)
+		t.Fatalf("events = %+v, want one archive event for %s with the op's reason", events, d.ID)
 	}
 }
 
@@ -403,9 +402,12 @@ func TestApplyRollsBackOnFailure(t *testing.T) {
 			}
 
 			// Called directly, without Validate, so the bad op reaches the store.
-			_, err = Apply(ctx, s, tc.out, ApplyContext{Actor: "sleep_cycle"})
+			applied, err := Apply(ctx, s, tc.out, ApplyContext{Actor: "sleep_cycle"})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("apply err = %v, want %v", err, tc.wantErr)
+			}
+			if applied != 0 {
+				t.Fatalf("applied = %d on a rolled-back apply, want 0", applied)
 			}
 			after, err := s.ListDomains(ctx, s.DB())
 			if err != nil {
