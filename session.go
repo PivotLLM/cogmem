@@ -204,7 +204,15 @@ func (s *Session) Recall(ctx context.Context, routeText string) []Injection {
 	if s == nil || s.Store() == nil {
 		return nil
 	}
-	res, err := s.comp.Compose(ctx, RouteRequest{
+	// The composer is read under the lock: Close nils it under the same lock,
+	// so a Recall racing a Close sees either a live composer or nil.
+	s.mu.Lock()
+	comp := s.comp
+	s.mu.Unlock()
+	if comp == nil {
+		return nil
+	}
+	res, err := comp.Compose(ctx, RouteRequest{
 		RecentTools: s.RecentTools(),
 		RouteText:   routeText,
 		Trace:       s.opt.Settings.Prompt.IncludeDebugTrace,

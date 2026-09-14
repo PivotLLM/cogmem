@@ -181,6 +181,43 @@ func (s *Store) ReleaseLease(ctx context.Context, q DBTX, name, owner string) er
 	return err
 }
 
+// ListEvents returns every audit row, oldest first. It exists so the audit
+// ledger can be read back and verified; the product paths only append.
+func (s *Store) ListEvents(ctx context.Context, q DBTX) ([]Event, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT id, event_type, domain_id, memory_id, old_json, new_json, reason,
+		       evidence_json, actor, model, prompt_hash
+		FROM memory_events ORDER BY created_at ASC, rowid ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		var domainID, memoryID, oldJSON, newJSON, model, promptHash *string
+		if err := rows.Scan(&e.ID, &e.Type, &domainID, &memoryID, &oldJSON, &newJSON,
+			&e.Reason, &e.Evidence, &e.Actor, &model, &promptHash); err != nil {
+			return nil, err
+		}
+		e.DomainID = derefStr(domainID)
+		e.MemoryID = derefStr(memoryID)
+		e.OldJSON = derefStr(oldJSON)
+		e.NewJSON = derefStr(newJSON)
+		e.Model = derefStr(model)
+		e.PromptHash = derefStr(promptHash)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 func nullStr(s string) any {
 	if s == "" {
 		return nil

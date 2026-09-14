@@ -127,8 +127,20 @@ func (s *Store) UpdateDomain(ctx context.Context, q DBTX, id string, p UpdateDom
 		state = *p.State
 	}
 	status := cur.Status
+	// archived_at follows the status, as ArchiveDomain stamps it: set on the
+	// transition to archived, cleared when the domain is active again.
+	var archivedAt any
+	if cur.ArchivedAt != nil {
+		archivedAt = cur.ArchivedAt.Unix()
+	}
 	if p.Status != nil {
 		status = *p.Status
+		switch {
+		case status == StatusArchived && cur.Status != StatusArchived:
+			archivedAt = now()
+		case status != StatusArchived:
+			archivedAt = nil
+		}
 	}
 	triggers := cur.Triggers
 	if p.Triggers != nil {
@@ -147,9 +159,9 @@ func (s *Store) UpdateDomain(ctx context.Context, q DBTX, id string, p UpdateDom
 		return err
 	}
 	res, err := q.ExecContext(ctx, `
-		UPDATE domains SET name=?, summary=?, state_json=?, status=?, triggers=?, keyword_triggers=?, type=?, version=version+1, updated_at=?
+		UPDATE domains SET name=?, summary=?, state_json=?, status=?, archived_at=?, triggers=?, keyword_triggers=?, type=?, version=version+1, updated_at=?
 		WHERE id=?`,
-		name, summary, string(stateJSON), string(status), triggers, keywordTriggers, stickyCol, now(), id)
+		name, summary, string(stateJSON), string(status), archivedAt, triggers, keywordTriggers, stickyCol, now(), id)
 	if err != nil {
 		return fmt.Errorf("cogmem: update domain: %w", err)
 	}
@@ -461,4 +473,44 @@ func scanDomain(sc scanner) (Domain, error) {
 	d.UpdatedAt = timeUnix(updatedAt)
 	d.ArchivedAt = unixPtr(archivedAt)
 	return d, nil
+}
+
+// DomainByNameAny is DomainByName without the status restriction: it returns
+// the domain with the given name (case-insensitive, trimmed) whatever its
+// status, preferring an active one when an archived domain shares the name.
+// Returns ErrNotFound if none exists.
+func (s *Store) DomainByNameAny(ctx context.Context, q DBTX, name string) (Domain, error) {
+	row := q.QueryRowContext(ctx,
+		domainSelect+` WHERE lower(trim(name))=lower(trim(?))
+		ORDER BY CASE WHEN status=? THEN 0 ELSE 1 END, id LIMIT 1`,
+		name, string(StatusActive))
+	d, err := scanDomain(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Domain{}, ErrNotFound
+	}
+	return d, err
+}
+
+// Counts is how much a store holds, by status.
+type Counts struct {
+	ActiveDomains   int
+	ArchivedDomains int
+	ActiveMemories  int
+	RetiredMemories int
+}
+
+// Counts reports how many domains and memories the store holds, by status.
+func (s *Store) Counts(ctx context.Context, q DBTX) (Counts, error) {
+	var c Counts
+	err := q.QueryRowContext(ctx, `
+		SELECT (SELECT COUNT(*) FROM domains WHERE status=?),
+		       (SELECT COUNT(*) FROM domains WHERE status=?),
+		       (SELECT COUNT(*) FROM memories WHERE status=?),
+		       (SELECT COUNT(*) FROM memories WHERE status=?)`,
+		string(StatusActive), string(StatusArchived), string(StatusActive), string(StatusRetired),
+	).Scan(&c.ActiveDomains, &c.ArchivedDomains, &c.ActiveMemories, &c.RetiredMemories)
+	if err != nil {
+		return Counts{}, fmt.Errorf("cogmem: count: %w", err)
+	}
+	return c, nil
 }

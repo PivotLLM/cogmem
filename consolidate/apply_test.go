@@ -5,28 +5,53 @@ package consolidate
 
 import (
 	"context"
-	"path/filepath"
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/PivotLLM/cogmem/store"
 )
 
+// createDomain seeds an active domain with the given name.
+func createDomain(t *testing.T, s *store.Store, name string) store.Domain {
+	t.Helper()
+	d, err := s.CreateDomain(context.Background(), s.DB(), store.CreateDomainParams{
+		Name: name, Status: store.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("create domain %q: %v", name, err)
+	}
+	return d
+}
+
+// domainByName finds an active domain by name, failing the test if absent.
+func domainByName(t *testing.T, s *store.Store, name string) store.Domain {
+	t.Helper()
+	d, err := s.DomainByName(context.Background(), s.DB(), name)
+	if err != nil {
+		t.Fatalf("domain %q: %v", name, err)
+	}
+	return d
+}
+
+// eventsOfType filters the audit ledger by event type.
+func eventsOfType(events []store.Event, typ string) []store.Event {
+	var out []store.Event
+	for _, e := range events {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func TestApplySupersedeEndToEnd(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(filepath.Join(t.TempDir(), "a.cogmem.db"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer st.Close()
+	s := openStore(t)
 
 	// Seed: a project domain with a rule hook.
-	d, _ := st.CreateDomain(ctx, st.DB(), store.CreateDomainParams{
-		Name: "Layout", Status: store.StatusActive,
-	})
-	h, _ := st.AddMemory(ctx, st.DB(), store.AddMemoryParams{
-		DomainID: d.ID, Type: store.TypeRule, Text: "Never use the color blue.",
-		Status: store.StatusActive, Confidence: 0.9,
-	})
+	d := createDomain(t, s, "Layout")
+	h := addMemory(t, s, d.ID, store.TypeRule, "Never use the color blue.")
 
 	out := Output{
 		MemoryOps: []MemoryOp{{
@@ -36,60 +61,97 @@ func TestApplySupersedeEndToEnd(t *testing.T) {
 		ConflictLedger: []LedgerEntry{{Resolved: "swapped blue rule", Reason: "user said so", Evidence: store.Evidence{SeqStart: 512, SeqEnd: 512}}},
 	}
 
-	n, err := Apply(ctx, st, out, ApplyContext{Actor: "sleep_cycle"})
+	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle", Model: "test-model"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("applied = %d, want 1", n)
 	}
-	old, _ := st.GetMemory(ctx, st.DB(), h.ID)
+	old, err := s.GetMemory(ctx, s.DB(), h.ID)
+	if err != nil {
+		t.Fatalf("get old memory: %v", err)
+	}
 	if old.Status != store.StatusRetired {
 		t.Fatalf("old hook status = %q, want retired", old.Status)
 	}
-	active, _ := st.ListMemories(ctx, st.DB(), d.ID, store.StatusActive)
+	active, err := s.ListMemories(ctx, s.DB(), d.ID, store.StatusActive)
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
 	if len(active) != 1 || active[0].Text != "Use blue for the layout." {
 		t.Fatalf("active hooks = %+v", active)
+	}
+	if active[0].SupersedesMemoryID == nil || *active[0].SupersedesMemoryID != h.ID {
+		t.Fatalf("replacement supersedes = %v, want %s", active[0].SupersedesMemoryID, h.ID)
+	}
+
+	// Ledger: the merge and the conflict resolution, in order.
+	events := listEvents(t, s)
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want merge then conflict_resolved", events)
+	}
+	merge := events[0]
+	if merge.Type != "merge" || merge.DomainID != d.ID || merge.MemoryID != active[0].ID ||
+		merge.Actor != "sleep_cycle" || merge.Model != "test-model" ||
+		merge.Evidence != `{"seq_start":512,"seq_end":512}` {
+		t.Fatalf("merge event = %+v", merge)
+	}
+	conflict := events[1]
+	if conflict.Type != "conflict_resolved" || conflict.Reason != "swapped blue rule — user said so" ||
+		conflict.Evidence != `{"seq_start":512,"seq_end":512}` ||
+		conflict.Actor != "sleep_cycle" || conflict.Model != "test-model" ||
+		conflict.DomainID != "" || conflict.MemoryID != "" {
+		t.Fatalf("conflict event = %+v", conflict)
 	}
 }
 
 func TestApplyCreateWithTmpID(t *testing.T) {
 	ctx := context.Background()
-	st, _ := store.Open(filepath.Join(t.TempDir(), "b.cogmem.db"))
-	defer st.Close()
+	s := openStore(t)
 
 	out := Output{
-		DomainOps: []DomainOp{{Op: "create", TmpID: "t1", Name: "New Project", Summary: "x", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}},
+		DomainOps: []DomainOp{{Op: "create", TmpID: "t1", Name: "New Project", Summary: "x", Reason: "new topic", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}},
 		MemoryOps: []MemoryOp{{Op: "add", Domain: "t1", Type: "fact", Text: "a durable fact", Confidence: 0.9, Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}},
 	}
-	n, err := Apply(ctx, st, out, ApplyContext{Actor: "sleep_cycle"})
+	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if n != 2 {
 		t.Fatalf("applied = %d, want 2", n)
 	}
-	// ListDomains includes the seeded sticky general domain; find the new topic.
-	doms, _ := st.ListDomains(ctx, st.DB(), store.StatusActive)
-	var proj *store.Domain
-	for i := range doms {
-		if doms[i].Name == "New Project" && !doms[i].Sticky() {
-			proj = &doms[i]
-		}
+	proj := domainByName(t, s, "New Project")
+	if proj.Sticky() || proj.Summary != "x" {
+		t.Fatalf("created domain = %+v, want non-sticky with summary x", proj)
 	}
-	if proj == nil {
-		t.Fatalf("created project not found in %+v", doms)
+	hooks, err := s.ListMemories(ctx, s.DB(), proj.ID, store.StatusActive)
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
 	}
-	hooks, _ := st.ListMemories(ctx, st.DB(), proj.ID, store.StatusActive)
-	if len(hooks) != 1 || hooks[0].Text != "a durable fact" {
-		t.Fatalf("hooks = %+v", hooks)
+	if len(hooks) != 1 || hooks[0].Text != "a durable fact" || hooks[0].Origin != store.OriginConsolidation {
+		t.Fatalf("hooks = %+v, want one consolidation-origin fact", hooks)
+	}
+	if hooks[0].SourceSeqStart == nil || *hooks[0].SourceSeqStart != 1 || hooks[0].SourceSeqEnd == nil || *hooks[0].SourceSeqEnd != 1 {
+		t.Fatalf("hook source range = %v..%v, want 1..1", hooks[0].SourceSeqStart, hooks[0].SourceSeqEnd)
+	}
+
+	// Both creates are logged against the assigned id, not the tmp_id.
+	events := listEvents(t, s)
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want 2", events)
+	}
+	if events[0].Type != "create" || events[0].DomainID != proj.ID || events[0].MemoryID != "" || events[0].Reason != "new topic" {
+		t.Fatalf("domain create event = %+v", events[0])
+	}
+	if events[1].Type != "create" || events[1].DomainID != proj.ID || events[1].MemoryID != hooks[0].ID {
+		t.Fatalf("memory create event = %+v", events[1])
 	}
 }
 
 func TestApplySetsTriggers(t *testing.T) {
 	ctx := context.Background()
-	st, _ := store.Open(filepath.Join(t.TempDir(), "t.cogmem.db"))
-	defer st.Close()
+	s := openStore(t)
 
 	out := Output{
 		DomainOps: []DomainOp{{
@@ -98,19 +160,10 @@ func TestApplySetsTriggers(t *testing.T) {
 			Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1},
 		}},
 	}
-	if _, err := Apply(ctx, st, out, ApplyContext{Actor: "sleep_cycle"}); err != nil {
+	if _, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	doms, _ := st.ListDomains(ctx, st.DB(), store.StatusActive)
-	var email *store.Domain
-	for i := range doms {
-		if doms[i].Name == "Email" {
-			email = &doms[i]
-		}
-	}
-	if email == nil {
-		t.Fatalf("Email domain not created: %+v", doms)
-	}
+	email := domainByName(t, s, "Email")
 	if email.Triggers != "google_gmail,microsoft365_mail" {
 		t.Fatalf("triggers = %q, want normalized list", email.Triggers)
 	}
@@ -121,8 +174,7 @@ func TestApplySetsTriggers(t *testing.T) {
 
 func TestApplySetsKeywordTriggers(t *testing.T) {
 	ctx := context.Background()
-	st, _ := store.Open(filepath.Join(t.TempDir(), "kw.cogmem.db"))
-	defer st.Close()
+	s := openStore(t)
 
 	out := Output{
 		DomainOps: []DomainOp{{
@@ -131,19 +183,10 @@ func TestApplySetsKeywordTriggers(t *testing.T) {
 			Evidence:        store.Evidence{SeqStart: 1, SeqEnd: 1},
 		}},
 	}
-	if _, err := Apply(ctx, st, out, ApplyContext{Actor: "sleep_cycle"}); err != nil {
+	if _, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	doms, _ := st.ListDomains(ctx, st.DB(), store.StatusActive)
-	var wf *store.Domain
-	for i := range doms {
-		if doms[i].Name == "Daily Ops" {
-			wf = &doms[i]
-		}
-	}
-	if wf == nil {
-		t.Fatalf("Daily Ops domain not created: %+v", doms)
-	}
+	wf := domainByName(t, s, "Daily Ops")
 	if wf.KeywordTriggers != "morning routine,weekly report" {
 		t.Fatalf("keyword_triggers = %q, want normalized list", wf.KeywordTriggers)
 	}
@@ -156,8 +199,7 @@ func TestApplySetsKeywordTriggers(t *testing.T) {
 // and later toggle stickiness via an update patch.
 func TestApplyStickyCreateAndUpdate(t *testing.T) {
 	ctx := context.Background()
-	st, _ := store.Open(filepath.Join(t.TempDir(), "sticky.cogmem.db"))
-	defer st.Close()
+	s := openStore(t)
 
 	yes := true
 	createOut := Output{
@@ -166,12 +208,12 @@ func TestApplyStickyCreateAndUpdate(t *testing.T) {
 			Sticky: &yes, Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1},
 		}},
 	}
-	if _, err := Apply(ctx, st, createOut, ApplyContext{Actor: "sleep_cycle"}); err != nil {
+	if _, err := Apply(ctx, s, createOut, ApplyContext{Actor: "sleep_cycle"}); err != nil {
 		t.Fatalf("apply create: %v", err)
 	}
-	d, err := st.DomainByName(ctx, st.DB(), "House Rules")
-	if err != nil || !d.Sticky() {
-		t.Fatalf("created domain sticky=%v err=%v, want sticky", d.Sticky(), err)
+	d := domainByName(t, s, "House Rules")
+	if !d.Sticky() {
+		t.Fatalf("created domain sticky=%v, want sticky", d.Sticky())
 	}
 
 	no := false
@@ -181,11 +223,212 @@ func TestApplyStickyCreateAndUpdate(t *testing.T) {
 			Evidence: store.Evidence{SeqStart: 2, SeqEnd: 2},
 		}},
 	}
-	if _, err := Apply(ctx, st, updateOut, ApplyContext{Actor: "sleep_cycle"}); err != nil {
+	if _, err := Apply(ctx, s, updateOut, ApplyContext{Actor: "sleep_cycle"}); err != nil {
 		t.Fatalf("apply update: %v", err)
 	}
-	d2, _ := st.GetDomain(ctx, st.DB(), d.ID, false)
+	d2, err := s.GetDomain(ctx, s.DB(), d.ID, false)
+	if err != nil {
+		t.Fatalf("get domain: %v", err)
+	}
 	if d2.Sticky() {
 		t.Fatalf("domain still sticky after update releasing it")
+	}
+}
+
+// Every field an update op can carry lands on the domain.
+func TestApplyUpdateDomainAllFields(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	d := createDomain(t, s, "Roadmap")
+
+	yes := true
+	state := store.DomainState{
+		Blockers:    []string{"waiting on legal"},
+		NextActions: []string{"ship v2"},
+		Constraints: []string{"no new deps"},
+		Fields:      map[string]any{"owner": "eric"},
+	}
+	out := Output{DomainOps: []DomainOp{{
+		Op: "update", ID: d.ID,
+		Summary:         "Product roadmap for 2026",
+		State:           &state,
+		Status:          "archived",
+		Triggers:        "Trello, google_calendar",
+		KeywordTriggers: "Roadmap Review, quarterly plan",
+		Sticky:          &yes,
+		Reason:          "consolidated status",
+		Evidence:        store.Evidence{SeqStart: 7, SeqEnd: 9},
+	}}}
+	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("applied = %d, want 1", n)
+	}
+
+	got, err := s.GetDomain(ctx, s.DB(), d.ID, false)
+	if err != nil {
+		t.Fatalf("get domain: %v", err)
+	}
+	if got.Summary != "Product roadmap for 2026" {
+		t.Errorf("summary = %q", got.Summary)
+	}
+	if !reflect.DeepEqual(got.State, state) {
+		t.Errorf("state = %+v, want %+v", got.State, state)
+	}
+	if got.Status != store.StatusArchived {
+		t.Errorf("status = %q, want archived", got.Status)
+	}
+	if got.Triggers != "trello,google_calendar" {
+		t.Errorf("triggers = %q, want normalized list", got.Triggers)
+	}
+	if got.KeywordTriggers != "roadmap review,quarterly plan" {
+		t.Errorf("keyword_triggers = %q, want normalized list", got.KeywordTriggers)
+	}
+	if !got.Sticky() {
+		t.Error("sticky = false, want true")
+	}
+	if got.Version != d.Version+1 {
+		t.Errorf("version = %d, want %d", got.Version, d.Version+1)
+	}
+	if got.Name != "Roadmap" {
+		t.Errorf("name = %q, an update must not rename", got.Name)
+	}
+
+	events := eventsOfType(listEvents(t, s), "update")
+	if len(events) != 1 || events[0].DomainID != d.ID || events[0].Reason != "consolidated status" ||
+		events[0].Evidence != `{"seq_start":7,"seq_end":9}` {
+		t.Fatalf("update events = %+v", events)
+	}
+}
+
+func TestApplyArchiveDomain(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	d := createDomain(t, s, "Old Project")
+
+	out := Output{DomainOps: []DomainOp{{
+		Op: "archive", ID: d.ID, Reason: "project shipped and closed",
+		Evidence: store.Evidence{SeqStart: 3, SeqEnd: 4},
+	}}}
+	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("applied = %d, want 1", n)
+	}
+	got, err := s.GetDomain(ctx, s.DB(), d.ID, false)
+	if err != nil {
+		t.Fatalf("get domain: %v", err)
+	}
+	if got.Status != store.StatusArchived || got.ArchivedAt == nil {
+		t.Fatalf("domain = status %q archived_at %v, want archived with a time", got.Status, got.ArchivedAt)
+	}
+	events := listEvents(t, s)
+	if len(events) != 1 || events[0].Type != "archive" || events[0].DomainID != d.ID ||
+		events[0].Reason != "project shipped and closed" ||
+		events[0].Evidence != `{"seq_start":3,"seq_end":4}` || events[0].Actor != "sleep_cycle" {
+		t.Fatalf("events = %+v, want one archive event for %s with the op's reason", events, d.ID)
+	}
+}
+
+func TestApplyRetireMemory(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	d := createDomain(t, s, "Prefs")
+	h := addMemory(t, s, d.ID, store.TypePreference, "Likes dark mode.")
+
+	out := Output{MemoryOps: []MemoryOp{{
+		Op: "retire", ID: h.ID, Reason: "contradicted by a newer preference",
+	}}}
+	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("applied = %d, want 1", n)
+	}
+	got, err := s.GetMemory(ctx, s.DB(), h.ID)
+	if err != nil {
+		t.Fatalf("get memory: %v", err)
+	}
+	if got.Status != store.StatusRetired || got.RetireReason == nil || *got.RetireReason != "contradicted by a newer preference" {
+		t.Fatalf("memory = %+v, want retired with the op's reason", got)
+	}
+	events := listEvents(t, s)
+	if len(events) != 1 || events[0].Type != "retire" || events[0].MemoryID != h.ID ||
+		events[0].Reason != "contradicted by a newer preference" || events[0].Evidence != `{"seq_start":0,"seq_end":0}` {
+		t.Fatalf("events = %+v, want one retire of %s", events, h.ID)
+	}
+}
+
+// Apply is one transaction: when a later op fails, nothing from the earlier
+// ones remains — no rows, no audit events.
+func TestApplyRollsBackOnFailure(t *testing.T) {
+	cases := []struct {
+		name    string
+		out     Output
+		wantErr error
+	}{
+		{
+			name: "duplicate domain name",
+			out: Output{DomainOps: []DomainOp{
+				{Op: "create", TmpID: "t1", Name: "Alpha", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}},
+				{Op: "create", TmpID: "t2", Name: "Alpha", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}},
+			}},
+			wantErr: store.ErrDuplicateName,
+		},
+		{
+			name: "retire of an unknown memory",
+			out: Output{
+				DomainOps: []DomainOp{{Op: "create", TmpID: "t1", Name: "Alpha", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}},
+				MemoryOps: []MemoryOp{
+					{Op: "add", Domain: "t1", Type: "fact", Text: "kept?", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}},
+					{Op: "retire", ID: "m-does-not-exist", Reason: "x"},
+				},
+			},
+			wantErr: store.ErrNotFound,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := openStore(t)
+			before, err := s.ListDomains(ctx, s.DB())
+			if err != nil {
+				t.Fatalf("list domains: %v", err)
+			}
+
+			// Called directly, without Validate, so the bad op reaches the store.
+			applied, err := Apply(ctx, s, tc.out, ApplyContext{Actor: "sleep_cycle"})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("apply err = %v, want %v", err, tc.wantErr)
+			}
+			if applied != 0 {
+				t.Fatalf("applied = %d on a rolled-back apply, want 0", applied)
+			}
+			after, err := s.ListDomains(ctx, s.DB())
+			if err != nil {
+				t.Fatalf("list domains: %v", err)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("domains after rollback = %+v, want unchanged %+v", after, before)
+			}
+			if _, err := s.DomainByName(ctx, s.DB(), "Alpha"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("Alpha after rollback: err=%v, want not found", err)
+			}
+			var memories int
+			if err := s.DB().QueryRow(`SELECT COUNT(*) FROM memories`).Scan(&memories); err != nil {
+				t.Fatalf("count memories: %v", err)
+			}
+			if memories != 0 {
+				t.Fatalf("memories after rollback = %d, want 0", memories)
+			}
+			if events := listEvents(t, s); len(events) != 0 {
+				t.Fatalf("events after rollback = %+v, want none", events)
+			}
+		})
 	}
 }

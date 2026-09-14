@@ -218,6 +218,55 @@ func TestPreMigrationSnapshotIsUsable(t *testing.T) {
 	if n != 1 {
 		t.Error("snapshot is missing the source column, so it is not the pre-migration state")
 	}
+	// Row counts match the fixture exactly: one domain, three memories in the
+	// three statuses the fixture wrote, and the recorded version is still 5.
+	for q, want := range map[string]int{
+		`SELECT COUNT(*) FROM domains`:                         1,
+		`SELECT COUNT(*) FROM memories`:                        3,
+		`SELECT COUNT(*) FROM memories WHERE status='active'`:  1,
+		`SELECT COUNT(*) FROM memories WHERE status='review'`:  1,
+		`SELECT COUNT(*) FROM memories WHERE status='retired'`: 1,
+		`SELECT MAX(version) FROM schema_migrations`:           5,
+	} {
+		var got int
+		if err := snap.QueryRow(q).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if got != want {
+			t.Errorf("%s = %d in the snapshot, want %d", q, got, want)
+		}
+	}
+	var integrity string
+	if err := snap.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Errorf("integrity_check = %q err=%v, want ok", integrity, err)
+	}
+	_ = snap.Close()
+
+	// The snapshot can be opened as a store. Doing so migrates IT (it is a v5
+	// database), which is what recovery needs — the data comes through — and
+	// must NOT write a nested <snap>.pre-v5.db beside it.
+	rs, err := Open(path + ".pre-v5.db")
+	if err != nil {
+		t.Fatalf("open snapshot as a store: %v", err)
+	}
+	defer func() { _ = rs.Close() }()
+	ctx := context.Background()
+	for id, want := range map[string]Status{"hACT": StatusActive, "hREV": StatusActive, "hRET": StatusRetired} {
+		m, err := rs.GetMemory(ctx, rs.DB(), id)
+		if err != nil {
+			t.Errorf("%s missing from the migrated snapshot: %v", id, err)
+			continue
+		}
+		if m.Status != want {
+			t.Errorf("%s status = %q after migrating the snapshot, want %q", id, m.Status, want)
+		}
+	}
+	if doms, _ := rs.ListDomains(ctx, rs.DB()); len(doms) != 1 || doms[0].Name != "General" || !doms[0].Sticky() {
+		t.Errorf("migrated snapshot domains = %+v, want the one sticky General", doms)
+	}
+	if _, err := os.Stat(path + ".pre-v5.db.pre-v5.db"); err == nil {
+		t.Error("opening the snapshot as a store wrote a nested snapshot beside it")
+	}
 }
 
 // A database being created is not an upgrade and must not leave a snapshot

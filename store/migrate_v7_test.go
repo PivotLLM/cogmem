@@ -140,7 +140,33 @@ func TestMigrationV8DropsDomainOwnerColumns(t *testing.T) {
 			t.Fatalf("domains.%s still present after migration", c)
 		}
 	}
-	if _, err := s.DomainByName(context.Background(), s.DB(), "General"); err != nil {
+	ctx := context.Background()
+	g, err := s.DomainByName(ctx, s.DB(), "General")
+	if err != nil {
 		t.Fatalf("General domain lost in migration: %v", err)
+	}
+	if g.ID != "dGEN" || !g.Sticky() || g.Status != StatusActive {
+		t.Fatalf("General = %+v, want the seeded sticky active dGEN", g)
+	}
+	// Everything else in the fixture came through too: all three memories,
+	// the review one promoted, the recorded version current, stable_rev kept.
+	if doms, _ := s.ListDomains(ctx, s.DB()); len(doms) != 1 {
+		t.Errorf("domains = %d, want 1", len(doms))
+	}
+	all, err := s.ListMemories(ctx, s.DB(), "dGEN")
+	if err != nil || len(all) != 3 {
+		t.Fatalf("memories = %d err=%v, want 3", len(all), err)
+	}
+	for id, want := range map[string]Status{"hACT": StatusActive, "hREV": StatusActive, "hRET": StatusRetired} {
+		m, err := s.GetMemory(ctx, s.DB(), id)
+		if err != nil || m.Status != want {
+			t.Errorf("%s = %q err=%v, want %q", id, m.Status, err, want)
+		}
+	}
+	if v, _ := s.recordedVersion(ctx); v != schemaVersion {
+		t.Errorf("recorded version = %d, want %d", v, schemaVersion)
+	}
+	if rev, _ := s.StableRev(ctx); rev != 7 {
+		t.Errorf("stable_rev = %d, want the fixture's 7", rev)
 	}
 }

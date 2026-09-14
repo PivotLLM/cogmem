@@ -321,6 +321,10 @@ func TestStatusAndConsolidate(t *testing.T) {
 	if !strings.Contains(res.ForLLM, "Last consolidation run: none") {
 		t.Fatalf("unexpected status: %s", res.ForLLM)
 	}
+	// A fresh store holds the seeded General domain and nothing else.
+	if !strings.Contains(res.ForLLM, "Domains: 1 active (0 archived); memories: 0 active (0 retired)\n") {
+		t.Fatalf("status lacks the counts line: %s", res.ForLLM)
+	}
 	if strings.Contains(res.ForLLM, "Pending") {
 		t.Fatalf("status still reports pending memories, which no longer exist: %s", res.ForLLM)
 	}
@@ -439,15 +443,27 @@ func TestExportMemoryRoundTrips(t *testing.T) {
 // A host that configured no memory directory (a deps-free catalogue
 // enumeration, or an agent without memory) gets an error result from every
 // tool, never a store created somewhere by accident.
+//
+// This never reaches a handler: wrap() refuses before opening anything, so
+// the arguments here are irrelevant and handler validation is NOT exercised
+// by this test — see TestMissingRequiredArgs for that. Every registered tool,
+// consolidate and export included, is refused with the same message.
 func TestEmptyDirErrors(t *testing.T) {
-	h := map[string]toolspec.ToolHandler{}
-	for _, d := range Definitions(Host{}) {
-		h[d.Name] = d.Handler
+	defs := Definitions(Host{})
+	if len(defs) != 15 {
+		t.Fatalf("registered tools = %d, want 15", len(defs))
 	}
-	for _, name := range []string{"domain_get", "memory_search", "memory_create", "status", "domain_create"} {
-		res := run(t, h[name], newCall(testSession, map[string]any{"id": "dXXXXX", "query": "x", "type": "fact", "text": "t", "name": "n"}))
+	const want = "cognitive memory is unavailable (no memory directory configured)"
+	for _, d := range defs {
+		res := run(t, d.Handler, newCall(testSession, map[string]any{"id": "dXXXXX", "query": "x", "type": "fact", "text": "t", "name": "n"}))
 		if !res.IsError {
-			t.Fatalf("%s: expected error with no memory directory, got: %s", name, res.ForLLM)
+			t.Fatalf("%s: expected error with no memory directory, got: %s", d.Name, res.ForLLM)
+		}
+		if res.ForLLM != want {
+			t.Errorf("%s: error = %q, want %q", d.Name, res.ForLLM, want)
+		}
+		if res.Err != nil {
+			t.Errorf("%s: Err = %v, want nil (refusal is not a Go error)", d.Name, res.Err)
 		}
 	}
 }

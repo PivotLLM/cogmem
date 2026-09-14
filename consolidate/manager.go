@@ -406,7 +406,7 @@ func (m *Manager) nightlyLoop(ctx context.Context) {
 	defer m.wg.Done()
 	for {
 		next := m.nextNightly(m.now())
-		timer := time.NewTimer(time.Until(next))
+		timer := time.NewTimer(next.Sub(m.now()))
 		select {
 		case <-m.stop:
 			timer.Stop()

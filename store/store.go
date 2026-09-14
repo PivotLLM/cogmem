@@ -9,7 +9,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -55,21 +57,18 @@ func Open(path string, opts ...Option) (*Store, error) {
 	for _, o := range opts {
 		o(&cfg)
 	}
-	db, err := sql.Open("sqlite", path)
+	// The pragmas travel in the DSN so the driver applies them to EVERY
+	// connection database/sql opens, not only the first: a pooled connection
+	// without busy_timeout fails a contended write at once with SQLITE_BUSY,
+	// and one without foreign_keys silently skips the FK checks.
+	q := url.Values{}
+	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", cfg.busyTimeout.Milliseconds()))
+	q.Add("_pragma", "foreign_keys(1)")
+	q.Add("_pragma", "journal_mode("+journalMode+")")
+	q.Add("_pragma", "synchronous("+synchronousMode+")")
+	db, err := sql.Open("sqlite", path+"?"+q.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("cogmem: open %s: %w", path, err)
-	}
-	pragmas := []string{
-		"PRAGMA journal_mode=" + journalMode,
-		fmt.Sprintf("PRAGMA busy_timeout=%d", cfg.busyTimeout.Milliseconds()),
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=" + synchronousMode,
-	}
-	for _, p := range pragmas {
-		if _, err := db.ExecContext(context.Background(), p); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("cogmem: %q: %w", p, err)
-		}
 	}
 	s := &Store{db: db, path: path}
 	if err := s.migrate(context.Background()); err != nil {
@@ -184,6 +183,9 @@ func (s *Store) recordedVersion(ctx context.Context) (int, error) {
 	return int(n.Int64), nil
 }
 
+// snapshotName matches the file names snapshotBeforeMigration produces.
+var snapshotName = regexp.MustCompile(`\.pre-v\d+\.db$`)
+
 // snapshotBeforeMigration writes a consistent copy of the database to
 // <path>.pre-v<from>.db before a migration runs, so an upgrade is recoverable
 // without the operator having prepared for it.
@@ -193,10 +195,15 @@ func (s *Store) recordedVersion(ctx context.Context) (int, error) {
 // A plain copy of the .db alone can miss committed data entirely.
 //
 // No-op when there is nothing to lose (no memories table yet — a database being
-// created) and when the snapshot already exists (VACUUM INTO refuses to
-// overwrite, which is the behaviour we want: the first snapshot at a given
-// version is the one taken before any changes).
+// created), when the file being opened is itself a pre-migration snapshot
+// (opening one for recovery must not nest a <snap>.pre-vN.db beside it), and
+// when the snapshot already exists (VACUUM INTO refuses to overwrite, which is
+// the behaviour we want: the first snapshot at a given version is the one taken
+// before any changes).
 func (s *Store) snapshotBeforeMigration(ctx context.Context, from int) error {
+	if snapshotName.MatchString(s.path) {
+		return nil
+	}
 	have, err := s.tableExists(ctx, "memories")
 	if err != nil || !have {
 		return err

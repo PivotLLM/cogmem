@@ -45,17 +45,11 @@ func composeWith(t *testing.T, s *store.Store, opts ...Option) Result {
 
 func TestAttachmentFromStickyMemory(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	gen, _ := s.GeneralDomain(ctx, db)
-	m, err := s.AddMemory(ctx, db, store.AddMemoryParams{
+	gen := mustGeneral(t, s)
+	m := mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeRule, Text: "Write in my voice.",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/voice.md",
 	})
-	if err != nil {
-		t.Fatalf("add: %v", err)
-	}
 
 	fl := &fakeLoader{files: map[string]string{"files/voice.md": "# Voice\n\nShort sentences.\n"}}
 	res := composeWith(t, s, WithAttachmentLoader(fl.load))
@@ -64,27 +58,22 @@ func TestAttachmentFromStickyMemory(t *testing.T) {
 	if strings.Contains(res.Stable, "files/voice.md") {
 		t.Fatalf("memory line should carry no file marker:\n%s", res.Stable)
 	}
-	for _, want := range []string{
-		"# Attached Documents",
-		"### Attached: files/voice.md",
-		`From memory ` + m.ID + ` ("Write in my voice.")`,
-		"current as of this turn",
-		"Short sentences.",
-	} {
-		if !strings.Contains(res.Attachments, want) {
-			t.Fatalf("attachments block missing %q:\n%s", want, res.Attachments)
-		}
+	want := "# Attached Documents\n\n" +
+		"Full contents of files attached to memories currently in context, as of this turn. " +
+		"Treat them as authoritative reference material for the memory that names them.\n\n" +
+		"### Attached: files/voice.md\n" +
+		"From memory " + m.ID + " (\"Write in my voice.\"), 26 bytes, current as of this turn.\n\n" +
+		"# Voice\n\nShort sentences."
+	if res.Attachments != want {
+		t.Fatalf("attachments block:\n%s\nwant:\n%s", res.Attachments, want)
 	}
 }
 
 func TestAttachmentFromRoutedDomain(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	d, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Writing"})
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	d := mustDomain(t, s, store.CreateDomainParams{Name: "Writing"})
+	mustMemory(t, s, store.AddMemoryParams{
 		DomainID: d.ID, Type: store.TypeRule, Text: "Voice guide.",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "maestro/style.md",
 	})
 
@@ -110,15 +99,14 @@ func TestAttachmentFromRoutedDomain(t *testing.T) {
 
 func TestAttachmentDedupedAcrossMemories(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	gen, _ := s.GeneralDomain(ctx, db)
+	gen := mustGeneral(t, s)
+	var ids []string
 	for i := 0; i < 3; i++ {
-		_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+		m := mustMemory(t, s, store.AddMemoryParams{
 			DomainID: gen.ID, Type: store.TypeFact, Text: fmt.Sprintf("note %d", i),
-			Status: store.StatusActive, Confidence: 0.9,
 			FileRef: "files/voice.md",
 		})
+		ids = append(ids, m.ID)
 	}
 
 	fl := &fakeLoader{files: map[string]string{"files/voice.md": "BODY"}}
@@ -130,45 +118,50 @@ func TestAttachmentDedupedAcrossMemories(t *testing.T) {
 	if n := strings.Count(res.Attachments, "BODY"); n != 1 {
 		t.Fatalf("expected document injected once, got %d copies:\n%s", n, res.Attachments)
 	}
+	// Several owners: provenance lists every id, sorted, and quotes no text.
+	if !strings.Contains(res.Attachments, "From memories ") {
+		t.Fatalf("multi-owner provenance missing:\n%s", res.Attachments)
+	}
+	for _, id := range ids {
+		if !strings.Contains(res.Attachments, id) {
+			t.Fatalf("provenance should name owner %s:\n%s", id, res.Attachments)
+		}
+	}
 }
 
 func TestAttachmentTruncationIsAnnounced(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	gen, _ := s.GeneralDomain(ctx, db)
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	gen := mustGeneral(t, s)
+	mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeRule, Text: "big doc",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/big.md",
 	})
 
 	fl := &fakeLoader{files: map[string]string{"files/big.md": strings.Repeat("x", 100)}}
 	res := composeWith(t, s, WithAttachmentLoader(fl.load), WithFileMaxBytes(10))
 
-	if !strings.Contains(res.Attachments, "TRUNCATED: showing the first 10 of 100 bytes") {
-		t.Fatalf("expected truncation notice:\n%s", res.Attachments)
+	if !strings.Contains(res.Attachments, "[TRUNCATED: showing the first 10 of 100 bytes. The rest of this document is NOT below — read the file directly if you need it.]\n\n"+strings.Repeat("x", 10)) {
+		t.Fatalf("expected truncation notice followed by the 10-byte prefix:\n%s", res.Attachments)
+	}
+	if strings.Contains(res.Attachments, strings.Repeat("x", 11)) {
+		t.Fatalf("more than the cap was injected:\n%s", res.Attachments)
 	}
 }
 
 func TestAttachmentBudgetExhaustionIsAnnounced(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	gen, _ := s.GeneralDomain(ctx, db)
+	gen := mustGeneral(t, s)
 	// Which of the two loads first is not fixed: memories render in id order and
 	// ids are random. The invariant under test is the budget, not the order — one
 	// document fits, the other is announced as excluded rather than silently
 	// dropped. (This used to pin the order with Priority, a field that was
 	// written, returned by the API, and read by nothing.)
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeFact, Text: "first",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/a.md",
 	})
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeFact, Text: "second",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/b.md",
 	})
 
@@ -184,66 +177,104 @@ func TestAttachmentBudgetExhaustionIsAnnounced(t *testing.T) {
 		t.Fatalf("exactly one document should fit a 50-byte budget (a=%v b=%v):\n%s",
 			loadedA, loadedB, res.Attachments)
 	}
-	if !strings.Contains(res.Attachments, "not included: the per-turn attachment budget (50 bytes) is exhausted") {
+	if !strings.Contains(res.Attachments, "not included: the per-turn attachment budget (50 bytes) is exhausted. Read the file directly if you need it.") {
 		t.Fatalf("expected budget notice:\n%s", res.Attachments)
+	}
+	// The excluded document is never loaded: the budget check precedes the call.
+	if len(fl.calls) != 1 {
+		t.Fatalf("only the fitting document should be loaded, got %v", fl.calls)
+	}
+}
+
+// When the remaining budget is smaller than the per-file cap, the next document
+// is cut to what is left rather than dropped: the sticky document takes 50 of
+// a 70-byte budget, so the routed one is loaded with a 20-byte limit.
+func TestAttachmentPartialFitUsesRemainingBudget(t *testing.T) {
+	s := newStore(t)
+	gen := mustGeneral(t, s)
+	mustMemory(t, s, store.AddMemoryParams{
+		DomainID: gen.ID, Type: store.TypeRule, Text: "Sticky rule.",
+		FileRef: "files/first.md",
+	})
+	topic := mustDomain(t, s, store.CreateDomainParams{Name: "Writing"})
+	mustMemory(t, s, store.AddMemoryParams{
+		DomainID: topic.ID, Type: store.TypeRule, Text: "Routed rule.",
+		FileRef: "files/second.md",
+	})
+
+	fl := &fakeLoader{files: map[string]string{
+		"files/first.md":  strings.Repeat("A", 50),
+		"files/second.md": strings.Repeat("B", 50),
+	}}
+	res := composeWith(t, s, WithAttachmentLoader(fl.load), WithFileMaxBytes(100), WithFileTotalMaxBytes(70))
+
+	if !strings.Contains(res.Attachments, strings.Repeat("A", 50)) {
+		t.Fatalf("sticky document should load whole:\n%s", res.Attachments)
+	}
+	if !strings.Contains(res.RoutedAttachments, "[TRUNCATED: showing the first 20 of 50 bytes.") {
+		t.Fatalf("routed document should be truncated to the remaining 20 bytes:\n%s", res.RoutedAttachments)
+	}
+	if !strings.Contains(res.RoutedAttachments, "\n\n"+strings.Repeat("B", 20)) || strings.Contains(res.RoutedAttachments, strings.Repeat("B", 21)) {
+		t.Fatalf("routed document should carry exactly 20 bytes:\n%s", res.RoutedAttachments)
+	}
+	if strings.Contains(res.RoutedAttachments, "budget") {
+		t.Fatalf("a partially fitting document must not be reported as budget-dropped:\n%s", res.RoutedAttachments)
+	}
+	if got := fmt.Sprint(fl.calls); got != "[files/first.md files/second.md]" {
+		t.Fatalf("load order = %s, want sticky first then routed", got)
 	}
 }
 
 func TestUnreadableAttachmentIsReportedNotSilent(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	gen, _ := s.GeneralDomain(ctx, db)
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	gen := mustGeneral(t, s)
+	m := mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeRule, Text: "voice",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "/etc/shadow.md",
 	})
 
 	fl := &fakeLoader{files: map[string]string{}}
 	res := composeWith(t, s, WithAttachmentLoader(fl.load))
 
-	if !strings.Contains(res.Attachments, "not included: access denied") {
-		t.Fatalf("expected an explicit unavailable note:\n%s", res.Attachments)
+	want := "### Attached: /etc/shadow.md\nFrom memory " + m.ID + " (\"voice\") — not included: access denied: outside the agent's readable paths"
+	if !strings.Contains(res.Attachments, want) {
+		t.Fatalf("expected an explicit unavailable note %q:\n%s", want, res.Attachments)
 	}
 }
 
-// A pending memory's document is named in the attachments section with a single
-// line explaining why it is absent — never its contents.
+// A long memory text is cut to maxHeadlineChars (trimmed, with an ellipsis) in
+// the document header, and only its first line is used.
 func TestDocumentHeaderTrimsLongMemoryText(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	gen, _ := s.GeneralDomain(ctx, db)
+	gen := mustGeneral(t, s)
 	long := strings.Repeat("word ", 60) + "\nsecond line"
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	m := mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeRule, Text: long,
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/voice.md",
 	})
 
 	fl := &fakeLoader{files: map[string]string{"files/voice.md": "BODY"}}
 	res := composeWith(t, s, WithAttachmentLoader(fl.load))
 
-	header := strings.SplitN(res.Attachments, "\n\nBODY", 2)[0]
-	lines := strings.Split(strings.TrimSpace(header), "\n")
-	last := lines[len(lines)-1]
-	if len(last) > maxHeadlineChars+80 {
-		t.Fatalf("header line not trimmed (%d chars): %q", len(last), last)
+	// 120 chars of "word " is 24 words ending in a space; the trim drops it.
+	headline := strings.TrimSpace(strings.Repeat("word ", 24)) + "…"
+	if len(headline) != maxHeadlineChars-1+len("…") {
+		t.Fatalf("test setup: headline is %d chars", len(headline))
 	}
-	if !strings.Contains(last, "…") {
-		t.Fatalf("expected an ellipsis on the trimmed headline: %q", last)
+	want := "### Attached: files/voice.md\nFrom memory " + m.ID + " (\"" + headline + "\"), 4 bytes, current as of this turn.\n\nBODY"
+	if !strings.Contains(res.Attachments, want) {
+		t.Fatalf("header not rendered as expected:\n%s\nwant to contain:\n%s", res.Attachments, want)
+	}
+	if strings.Contains(res.Attachments, "second line") {
+		t.Fatalf("headline must use the first line only:\n%s", res.Attachments)
 	}
 }
 
 func TestNoLoaderMeansNoAttachmentsBlock(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	gen, _ := s.GeneralDomain(ctx, db)
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	gen := mustGeneral(t, s)
+	mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeRule, Text: "voice",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/voice.md",
 	})
 
@@ -259,12 +290,9 @@ func TestNoLoaderMeansNoAttachmentsBlock(t *testing.T) {
 
 func TestMemoryWithoutFileRefAddsNothing(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
-	gen, _ := s.GeneralDomain(ctx, db)
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	gen := mustGeneral(t, s)
+	mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypePreference, Text: "Be concise.",
-		Status: store.StatusActive, Confidence: 0.9,
 	})
 
 	fl := &fakeLoader{files: map[string]string{}}
@@ -280,17 +308,14 @@ func TestMemoryWithoutFileRefAddsNothing(t *testing.T) {
 
 func TestDroppedRoutedDomainDoesNotAttach(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
 	// Two topic domains; maxChars is tight enough that only the first section fits.
 	for _, name := range []string{"First", "Second"} {
-		d, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{
+		d := mustDomain(t, s, store.CreateDomainParams{
 			Name:    name,
 			Summary: strings.Repeat("summary ", 20),
 		})
-		_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+		mustMemory(t, s, store.AddMemoryParams{
 			DomainID: d.ID, Type: store.TypeFact, Text: name + " note",
-			Status: store.StatusActive, Confidence: 0.9,
 			FileRef: "files/" + strings.ToLower(name) + ".md",
 		})
 	}
@@ -313,19 +338,15 @@ func TestDroppedRoutedDomainDoesNotAttach(t *testing.T) {
 // memory is not orphaned.
 func TestAttachmentSharedByBothBlocks(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
 
-	gen, _ := s.GeneralDomain(ctx, db)
-	sticky, _ := s.AddMemory(ctx, db, store.AddMemoryParams{
+	gen := mustGeneral(t, s)
+	sticky := mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeRule, Text: "Always use the house voice.",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/voice.md",
 	})
-	topic, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Writing"})
-	routed, _ := s.AddMemory(ctx, db, store.AddMemoryParams{
+	topic := mustDomain(t, s, store.CreateDomainParams{Name: "Writing"})
+	routed := mustMemory(t, s, store.AddMemoryParams{
 		DomainID: topic.ID, Type: store.TypeRule, Text: "Chapter drafts follow the voice guide.",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/voice.md",
 	})
 
@@ -339,6 +360,9 @@ func TestAttachmentSharedByBothBlocks(t *testing.T) {
 	}
 	if !strings.Contains(res.Attachments, "VOICEBODY") {
 		t.Errorf("a document with a sticky owner belongs in the stable (cached) partition:\n%s", res.Attachments)
+	}
+	if res.RoutedAttachments != "" {
+		t.Errorf("the routed partition should be empty when the only document is shared:\n%s", res.RoutedAttachments)
 	}
 	// Provenance names both owners so the routed memory can still be tied to it.
 	for _, id := range []string{sticky.ID, routed.ID} {
@@ -354,19 +378,15 @@ func TestAttachmentSharedByBothBlocks(t *testing.T) {
 // attachment cost.
 func TestAttachmentBudgetSharedAcrossPartitions(t *testing.T) {
 	s := newStore(t)
-	ctx := context.Background()
-	db := s.DB()
 
-	gen, _ := s.GeneralDomain(ctx, db)
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	gen := mustGeneral(t, s)
+	mustMemory(t, s, store.AddMemoryParams{
 		DomainID: gen.ID, Type: store.TypeRule, Text: "Sticky rule.",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/first.md",
 	})
-	topic, _ := s.CreateDomain(ctx, db, store.CreateDomainParams{Name: "Writing"})
-	_, _ = s.AddMemory(ctx, db, store.AddMemoryParams{
+	topic := mustDomain(t, s, store.CreateDomainParams{Name: "Writing"})
+	mustMemory(t, s, store.AddMemoryParams{
 		DomainID: topic.ID, Type: store.TypeRule, Text: "Routed rule.",
-		Status: store.StatusActive, Confidence: 0.9,
 		FileRef: "files/second.md",
 	})
 
@@ -383,7 +403,7 @@ func TestAttachmentBudgetSharedAcrossPartitions(t *testing.T) {
 	if strings.Contains(res.RoutedAttachments, strings.Repeat("B", 50)) {
 		t.Errorf("routed document should not fit — the budget is shared, not per-partition:\n%s", res.RoutedAttachments)
 	}
-	if !strings.Contains(res.RoutedAttachments, "budget") {
+	if !strings.Contains(res.RoutedAttachments, "not included: the per-turn attachment budget (50 bytes) is exhausted") {
 		t.Errorf("the dropped document should say why it is missing:\n%s", res.RoutedAttachments)
 	}
 }
