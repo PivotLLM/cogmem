@@ -6,9 +6,11 @@ package consolidate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,16 +41,42 @@ func Observe(ctx context.Context, st *store.Store, seq int64, role, text string,
 	return true, nil
 }
 
-// ModelCaller invokes the configured memory model with a system prompt and a
-// JSON user message, returning the raw model text (which MUST parse as a
-// consolidation Output via ParseOutput) and the name of the model that produced
-// it. Implementations fall through their model chain until one returns a usable,
-// parseable response; only then do they return a nil error. This contract means
-// the worker never has to record a raw JSON-parser error from a flaky model. It
-// is decoupled from providers so the worker never imports a provider package.
-type ModelCaller interface {
-	Consolidate(ctx context.Context, systemPrompt, userJSON string) (raw string, model string, err error)
+// ModelRequest is one call to a model. The host owns which model answers,
+// credentials, transport, retries on transport errors and cooldowns.
+type ModelRequest struct {
+	System     string
+	User       string
+	JSONObject bool     // ask for a JSON-object response where the provider supports it
+	Exclude    []string // model names the caller has learned to avoid for this call
 }
+
+// ModelReply is the answer. Model names which model produced it.
+type ModelReply struct {
+	Content      string
+	FinishReason string
+	Model        string
+}
+
+// ModelCaller is how the worker reaches a model. The host implements it and
+// owns the model chain: it returns an error only when no model is available
+// after honouring req.Exclude, or on a transport failure it could not route
+// around. It does not validate the content. cogmem owns its output format, so
+// the worker parses each reply itself and, when one is empty or not a
+// consolidation Output, excludes that model and asks again (see
+// maxModelAttempts). The interface is decoupled from providers so the worker
+// never imports a provider package.
+type ModelCaller interface {
+	Complete(ctx context.Context, req ModelRequest) (ModelReply, error)
+}
+
+// maxModelAttempts bounds how many replies one run will ask for before giving
+// up. Each unusable reply adds its model to Exclude for the next attempt.
+const maxModelAttempts = 4
+
+// errInvalidOutput is what callModel returns when every attempt produced text
+// that did not parse as an Output. Its text is the clean, human-readable
+// message recorded on the run; the raw JSON-parser errors only reach the log.
+var errInvalidOutput = errors.New("memory model output was not valid JSON")
 
 // Worker runs the consolidation "sleep cycle" against one store: it drains the
 // store's inbox into memory operations.
@@ -91,7 +119,8 @@ func WithRetention(eventDays, retiredDays int) Option {
 	return func(w *Worker) { w.eventDays, w.retiredDays = eventDays, retiredDays }
 }
 
-// WithModelName records a human-readable model name in consolidation runs.
+// WithModelName sets the model name recorded on a run when the host's reply
+// carries none.
 func WithModelName(name string) Option { return func(w *Worker) { w.modelName = name } }
 
 // NewWorker builds a Worker over a store and a model caller.
@@ -212,29 +241,25 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 	started := time.Now()
 	inputTokens := EstimateTokens(system + string(userJSON))
 
-	raw, model, err := w.model.Consolidate(ctx, system, string(userJSON))
-	if model == "" {
-		model = w.modelName
-	}
+	out, reply, err := w.callModel(ctx, p.ID, system, string(userJSON))
+	model := w.modelLabel(reply.Model)
+	raw := reply.Content
+	outputTokens := EstimateTokens(raw)
 	if err != nil {
-		// The caller exhausted its model chain without a usable, parseable
-		// response. err is a clean, human-readable message (never a raw
-		// JSON-parser error) — see ModelCaller.
-		w.recordRun(ctx, p, model, "error", 0, consolidated+1, lastSeq, inputTokens, 0, err.Error(), "", started)
+		if errors.Is(err, errInvalidOutput) {
+			// Every attempt came back unusable. Record the clean message, never
+			// the parser's ("unexpected end of JSON input"), and keep the inbox
+			// for the next run.
+			w.recordRun(ctx, p, model, "invalid_json", 0, consolidated+1, lastSeq, inputTokens, outputTokens, err.Error(), "", started)
+			w.dump(p, system, string(userJSON), raw, 0)
+			result.Status = "invalid_json"
+			return result, nil
+		}
+		// The host had no model left to try (or a transport failure it could
+		// not route around).
+		w.recordRun(ctx, p, model, "error", 0, consolidated+1, lastSeq, inputTokens, outputTokens, err.Error(), "", started)
 		result.Status = "error"
 		return result, fmt.Errorf("consolidate: model call: %w", err)
-	}
-	outputTokens := EstimateTokens(raw)
-
-	out, perr := ParseOutput(raw)
-	if perr != nil {
-		// Defensive: ModelCaller guarantees parseable raw, so this is
-		// unreachable in practice. Never surface the raw parser error to the
-		// user (e.g. "unexpected end of JSON input") — record a clean message.
-		w.recordRun(ctx, p, model, "invalid_json", 0, consolidated+1, lastSeq, inputTokens, outputTokens, "memory model output was not valid JSON", "", started)
-		w.dump(p, system, string(userJSON), raw, 0)
-		result.Status = "invalid_json"
-		return result, nil
 	}
 
 	// Repair safe, mechanically-fixable deviations (e.g. an inferred item the
@@ -284,6 +309,59 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 	result.Applied = applied
 	result.Status = "ok"
 	return result, nil
+}
+
+// callModel asks the host for a reply and validates it as a consolidation
+// Output. An empty or unparseable reply is logged, its model is added to
+// Exclude, and the host is asked again, up to maxModelAttempts in total. On
+// success reply is the accepted answer; on failure it is the last one tried,
+// so its Model still names the model to record. A host error is returned as
+// is; exhausting the attempts returns errInvalidOutput.
+func (w *Worker) callModel(ctx context.Context, runID, system, user string) (Output, ModelReply, error) {
+	req := ModelRequest{System: system, User: user, JSONObject: true}
+	var last ModelReply
+	for attempt := 1; attempt <= maxModelAttempts; attempt++ {
+		reply, err := w.model.Complete(ctx, req)
+		if err != nil {
+			if reply.Model == "" {
+				reply.Model = last.Model
+			}
+			return Output{}, reply, err
+		}
+		last = reply
+
+		out, perr := ParseOutput(reply.Content)
+		if perr == nil {
+			return out, reply, nil
+		}
+		reason := "not valid JSON"
+		if strings.TrimSpace(reply.Content) == "" {
+			reason = "empty"
+		}
+		logger.WarnCF("cogmem", "consolidation: model reply unusable", map[string]any{
+			"id":            runID,
+			"model":         w.modelLabel(reply.Model),
+			"attempt":       attempt,
+			"max_attempts":  maxModelAttempts,
+			"reason":        reason,
+			"parse_error":   perr.Error(),
+			"finish_reason": reply.FinishReason,
+			"content_chars": len(reply.Content),
+		})
+		if reply.Model != "" && !slices.Contains(req.Exclude, reply.Model) {
+			req.Exclude = append(req.Exclude, reply.Model)
+		}
+	}
+	return Output{}, last, fmt.Errorf("%w after %d attempts", errInvalidOutput, maxModelAttempts)
+}
+
+// modelLabel names a model for run records and logs: the reply's own name, or
+// the configured WithModelName when the reply carried none.
+func (w *Worker) modelLabel(name string) string {
+	if name != "" {
+		return name
+	}
+	return w.modelName
 }
 
 // currentState projects the active domains and their active memories into the

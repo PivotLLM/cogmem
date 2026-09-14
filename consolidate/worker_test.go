@@ -5,9 +5,12 @@ package consolidate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/PivotLLM/cogmem/store"
@@ -39,19 +42,33 @@ func inboxSeqs(t *testing.T, s *store.Store) []int64 {
 	return out
 }
 
-// fakeModel returns a canned raw string regardless of input.
+// fakeModel is a scripted ModelCaller. With only raw set it answers every
+// request with that content as "fake-model" (or model); with replies set it
+// answers in order, repeating the last one; with err set it fails every call.
+// It records every request so tests can assert on Exclude and JSONObject.
 type fakeModel struct {
-	raw   string
-	model string
-	err   error
+	raw     string
+	model   string
+	err     error
+	replies []ModelReply
+
+	requests []ModelRequest
 }
 
-func (m *fakeModel) Consolidate(ctx context.Context, system, userJSON string) (string, string, error) {
+func (m *fakeModel) Complete(ctx context.Context, req ModelRequest) (ModelReply, error) {
+	m.requests = append(m.requests, req)
+	if m.err != nil {
+		return ModelReply{}, m.err
+	}
+	if len(m.replies) > 0 {
+		i := min(len(m.requests)-1, len(m.replies)-1)
+		return m.replies[i], nil
+	}
 	name := m.model
 	if name == "" {
 		name = "fake-model"
 	}
-	return m.raw, name, m.err
+	return ModelReply{Content: m.raw, FinishReason: "stop", Model: name}, nil
 }
 
 func openStore(t *testing.T) *store.Store {
@@ -255,7 +272,8 @@ func TestRunOnceInvalidJSON(t *testing.T) {
 	seedDomain(t, s)
 	seedInbox(t, s, sampleMessages())
 
-	w := NewWorker(s, &fakeModel{raw: "not json at all"}, WithModelName("test-model"))
+	m := &fakeModel{raw: "not json at all"}
+	w := NewWorker(s, m, WithModelName("test-model"))
 	res, err := w.RunOnce(context.Background(), params())
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -263,9 +281,147 @@ func TestRunOnceInvalidJSON(t *testing.T) {
 	if res.Status != "invalid_json" {
 		t.Fatalf("status = %q, want invalid_json", res.Status)
 	}
-	st, _ := s.GetState(context.Background(), s.DB(), store.InboxStateKey)
+	if len(m.requests) != maxModelAttempts {
+		t.Fatalf("model calls = %d, want %d (every attempt used)", len(m.requests), maxModelAttempts)
+	}
+	for i, req := range m.requests {
+		if !req.JSONObject {
+			t.Fatalf("request %d: JSONObject = false, want true", i)
+		}
+	}
+	ctx := context.Background()
+	st, _ := s.GetState(ctx, s.DB(), store.InboxStateKey)
 	if st.ConsolidatedSeq != 0 {
 		t.Fatalf("watermark advanced to %d on invalid json, want 0", st.ConsolidatedSeq)
+	}
+	if left := inboxSeqs(t, s); len(left) != 2 {
+		t.Fatalf("inbox after invalid_json = %v, want the 2 meaningful messages kept", left)
+	}
+	run, ok, err := s.LastRun(ctx, s.DB())
+	if err != nil || !ok {
+		t.Fatalf("last run: ok=%v err=%v", ok, err)
+	}
+	if run.Status != "invalid_json" || run.Model != "fake-model" {
+		t.Fatalf("run = %+v, want status invalid_json model fake-model", run)
+	}
+	// The recorded reason is the worker's own sentence, never the JSON
+	// parser's ("invalid character 'o' in literal null" and friends).
+	if run.Error == "" || strings.Contains(run.Error, "invalid character") || strings.Contains(run.Error, "unexpected end") {
+		t.Fatalf("run.Error = %q, want a clean message without parser text", run.Error)
+	}
+}
+
+func TestRunOnceRetriesUnusableReplyOnAnotherModel(t *testing.T) {
+	s := openStore(t)
+	domainID, memoryID := seedDomain(t, s)
+	seedInbox(t, s, sampleMessages())
+
+	good := fmt.Sprintf(`{"domain_ops":[],"memory_ops":[{"op":"supersede","domain":%q,"old_id":%q,"type":"rule","text":"Run gofmt and tests.","status":"active","source":"user_explicit","evidence":{"seq_start":1,"seq_end":2}}],"conflict_ledger":[]}`, domainID, memoryID)
+	m := &fakeModel{replies: []ModelReply{
+		{Content: "Sure! Here are the memory ops:", FinishReason: "stop", Model: "model-a"},
+		{Content: good, FinishReason: "stop", Model: "model-b"},
+	}}
+	w := NewWorker(s, m, WithModelName("test-model"))
+	res, err := w.RunOnce(context.Background(), params())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Status != "ok" || res.Applied < 1 {
+		t.Fatalf("result = %+v, want ok with applied>=1", res)
+	}
+	if len(m.requests) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	}
+	if len(m.requests[0].Exclude) != 0 {
+		t.Fatalf("first request Exclude = %v, want empty", m.requests[0].Exclude)
+	}
+	if got := m.requests[1].Exclude; len(got) != 1 || got[0] != "model-a" {
+		t.Fatalf("second request Exclude = %v, want [model-a]", got)
+	}
+	run, ok, err := s.LastRun(context.Background(), s.DB())
+	if err != nil || !ok {
+		t.Fatalf("last run: ok=%v err=%v", ok, err)
+	}
+	if run.Model != "model-b" {
+		t.Fatalf("run.Model = %q, want model-b (the model whose reply was accepted)", run.Model)
+	}
+}
+
+func TestRunOnceExcludeGrowsWithEachUnusableModel(t *testing.T) {
+	s := openStore(t)
+	seedDomain(t, s)
+	seedInbox(t, s, sampleMessages())
+
+	// Four distinct unusable replies: prose, an empty body, whitespace, and
+	// truncated JSON. Each model must be excluded from every later attempt.
+	m := &fakeModel{replies: []ModelReply{
+		{Content: "I cannot help with that.", FinishReason: "stop", Model: "model-a"},
+		{Content: "", FinishReason: "stop", Model: "model-b"},
+		{Content: "  \n\t", FinishReason: "stop", Model: "model-c"},
+		{Content: `{"domain_ops":[`, FinishReason: "length", Model: "model-d"},
+	}}
+	w := NewWorker(s, m)
+	res, err := w.RunOnce(context.Background(), params())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Status != "invalid_json" {
+		t.Fatalf("status = %q, want invalid_json", res.Status)
+	}
+	if len(m.requests) != maxModelAttempts {
+		t.Fatalf("model calls = %d, want %d", len(m.requests), maxModelAttempts)
+	}
+	wantExclude := [][]string{
+		nil,
+		{"model-a"},
+		{"model-a", "model-b"},
+		{"model-a", "model-b", "model-c"},
+	}
+	for i, req := range m.requests {
+		if !slices.Equal(req.Exclude, wantExclude[i]) {
+			t.Fatalf("request %d Exclude = %v, want %v", i, req.Exclude, wantExclude[i])
+		}
+	}
+	run, ok, err := s.LastRun(context.Background(), s.DB())
+	if err != nil || !ok {
+		t.Fatalf("last run: ok=%v err=%v", ok, err)
+	}
+	if run.Model != "model-d" {
+		t.Fatalf("run.Model = %q, want model-d (the last one tried)", run.Model)
+	}
+}
+
+func TestRunOnceHostErrorRecordsError(t *testing.T) {
+	s := openStore(t)
+	seedDomain(t, s)
+	seedInbox(t, s, sampleMessages())
+
+	m := &fakeModel{err: errors.New("no memory model available")}
+	w := NewWorker(s, m, WithModelName("test-model"))
+	res, err := w.RunOnce(context.Background(), params())
+	if err == nil || !strings.Contains(err.Error(), "no memory model available") {
+		t.Fatalf("RunOnce err = %v, want the host's error wrapped", err)
+	}
+	if res.Status != "error" {
+		t.Fatalf("status = %q, want error", res.Status)
+	}
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1 (a host error is not retried here)", len(m.requests))
+	}
+	ctx := context.Background()
+	st, _ := s.GetState(ctx, s.DB(), store.InboxStateKey)
+	if st.ConsolidatedSeq != 0 {
+		t.Fatalf("watermark advanced to %d on host error, want 0", st.ConsolidatedSeq)
+	}
+	if left := inboxSeqs(t, s); len(left) != 2 {
+		t.Fatalf("inbox after host error = %v, want the 2 meaningful messages kept", left)
+	}
+	run, ok, err := s.LastRun(ctx, s.DB())
+	if err != nil || !ok {
+		t.Fatalf("last run: ok=%v err=%v", ok, err)
+	}
+	if run.Status != "error" || run.Error != "no memory model available" || run.Model != "test-model" {
+		t.Fatalf("run = %+v, want status error with the host's message and the fallback model name", run)
 	}
 }
 

@@ -140,16 +140,42 @@ cogmem does not call a model itself and doesn't depend on any provider library.
 `consolidate.ModelCaller` is a one-method interface that the host implements:
 
 ```go
+// ModelRequest is one call to a model. The host owns which model answers,
+// credentials, transport, retries on transport errors and cooldowns.
+type ModelRequest struct {
+    System     string
+    User       string
+    JSONObject bool     // ask for a JSON-object response where the provider supports it
+    Exclude    []string // model names the caller has learned to avoid for this call
+}
+
+// ModelReply is the answer. Model names which model produced it.
+type ModelReply struct {
+    Content      string
+    FinishReason string
+    Model        string
+}
+
 type ModelCaller interface {
-    Consolidate(ctx context.Context, systemPrompt, userJSON string) (raw string, model string, err error)
+    Complete(ctx context.Context, req ModelRequest) (ModelReply, error)
 }
 ```
 
-The worker hands it the consolidation prompt and a JSON payload, and expects back raw
-text that parses as the strict consolidation `Output`, together with the name
-of the model that produced it. The contract requires the host to walk its own
-model chain until it has a usable, parseable reply, so the worker never
-records a raw parser error from a flaky model.
+The split is deliberate. The host owns the models: it walks its own chain,
+skipping any model named in `Exclude`, and returns an error only when no model
+is left to try or a transport failure could not be routed around. It does not
+look at the content. cogmem owns its output format: the worker sends the
+consolidation prompt and JSON payload with `JSONObject` set, parses the reply
+as the strict consolidation `Output`, and if the content is empty or does not
+parse it logs the reply, adds `reply.Model` to `Exclude` and asks again, up to
+four attempts in total. A run that still has no usable reply is recorded as
+`invalid_json` with a plain message (never a raw parser error), and the inbox
+is kept for the next run; a host error is recorded as `error`. The run names
+the model whose reply was accepted, or the last one tried, falling back to
+`WithModelName` when a reply carries no model name.
+
+The same request/reply shape is used by the context engine, so one host client
+can serve both.
 
 ## Host obligations
 
