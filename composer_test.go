@@ -110,7 +110,7 @@ func TestStableBlockContent(t *testing.T) {
 	if rev != rev0+3 {
 		t.Fatalf("stable_rev = %d, want %d (three stable-affecting writes after %d)", rev, rev0+3, rev0)
 	}
-	for _, want := range []string{"Be concise.", "Prefers tabs.", "COGMEM domain General is sticky", "Topics (index)", "Website Redesign"} {
+	for _, want := range []string{"Be concise.", "Prefers tabs.", "## Injected cogmem domain: General (", "Topics (index)", "Website Redesign"} {
 		if !strings.Contains(txt, want) {
 			t.Fatalf("stable block missing %q:\n%s", want, txt)
 		}
@@ -370,7 +370,7 @@ func TestRoutedBlockDefaultTopK(t *testing.T) {
 	if len(res.Loaded) != 3 {
 		t.Fatalf("loaded %d domains, want the default 3: %v", len(res.Loaded), res.Loaded)
 	}
-	if n := strings.Count(res.Text, "## Active Context: "); n != 3 {
+	if n := strings.Count(res.Text, "## Injected cogmem domain: "); n != 3 {
 		t.Fatalf("rendered %d sections, want 3:\n%s", n, res.Text)
 	}
 }
@@ -424,7 +424,7 @@ func TestTopicIndexFormat(t *testing.T) {
 	if strings.Contains(txt, "- "+sticky.ID+" ·") {
 		t.Fatalf("sticky domain must not be listed in the topic index:\n%s", txt)
 	}
-	if !strings.Contains(txt, "COGMEM domain Always On is sticky:\n\n- (fact) pinned fact\n") {
+	if !strings.Contains(txt, "## Injected cogmem domain: Always On ("+sticky.ID+") — sticky, loaded every turn\n- (fact) pinned fact\n") {
 		t.Fatalf("sticky domain should render in full:\n%s", txt)
 	}
 }
@@ -458,9 +458,9 @@ func TestStableBlockStickyOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stable block: %v", err)
 	}
-	a := strings.Index(txt, "COGMEM domain Alpha is sticky")
-	g := strings.Index(txt, "COGMEM domain General is sticky")
-	z := strings.Index(txt, "COGMEM domain Zulu is sticky")
+	a := strings.Index(txt, "## Injected cogmem domain: Alpha (")
+	g := strings.Index(txt, "## Injected cogmem domain: General (")
+	z := strings.Index(txt, "## Injected cogmem domain: Zulu (")
 	if a < 0 || g < 0 || z < 0 {
 		t.Fatalf("a sticky domain is missing (a=%d g=%d z=%d):\n%s", a, g, z, txt)
 	}
@@ -681,7 +681,7 @@ func TestRoutedBlockSignalPriorityNoDuplicate(t *testing.T) {
 	if len(res.Loaded) != 1 || res.Loaded[0] != email.ID {
 		t.Fatalf("domain should appear exactly once, got %v", res.Loaded)
 	}
-	if n := strings.Count(res.Text, "Active Context: "+email.ID); n != 1 {
+	if n := strings.Count(res.Text, "("+email.ID+") — "); n != 1 {
 		t.Fatalf("domain rendered %d times, want 1:\n%s", n, res.Text)
 	}
 	if len(res.Trace) != 1 || res.Trace[0].Signal != "tool:google_gmail" {
@@ -814,5 +814,21 @@ func TestRoutedBlockKeywordWordBoundary(t *testing.T) {
 	}
 	if !strings.Contains(rr.Text, "(rule) Rebase before merging.") {
 		t.Fatalf("routed text missing the rule:\n%s", rr.Text)
+	}
+}
+
+// Every routing signal becomes a plain reason in the domain's header, so the
+// model can see why a domain was injected and adjust its trigger.
+func TestSignalReason(t *testing.T) {
+	for signal, want := range map[string]string{
+		"tool:google_gmail":     `loaded by tool trigger "google_gmail"`,
+		"keyword:release train": `loaded by keyword trigger "release train"`,
+		"match:invoice":         `loaded because the message matched "invoice"`,
+		"recency":               "loaded because it was recently active",
+		"other":                 "loaded by other",
+	} {
+		if got := signalReason(signal); got != want {
+			t.Errorf("signalReason(%q) = %q, want %q", signal, got, want)
+		}
 	}
 }

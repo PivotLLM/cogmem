@@ -277,7 +277,8 @@ func TestEndToEnd_ObserveConsolidateRecall(t *testing.T) {
 		t.Fatalf("injections = %+v, want one stable and one routed", inj)
 	}
 	for _, want := range []string{
-		"COGMEM domain General is sticky:\n\n- (rule) " + e2eStickyMemory + " [origin: consolidation]\n",
+		") — sticky, loaded every turn\n- (rule) " + e2eStickyMemory + " [origin: consolidation]\n",
+		"## Injected cogmem domain: General (",
 		"## Topics (index)\n",
 		"- " + deploy.ID + " · " + e2eDomainName + " — " + e2eSummary + "\n",
 	} {
@@ -285,14 +286,14 @@ func TestEndToEnd_ObserveConsolidateRecall(t *testing.T) {
 			t.Fatalf("stable block missing %q:\n%s", want, stable)
 		}
 	}
-	if !strings.Contains(routed, "## Active Context: "+decoy.ID+" · Decoy\n") || strings.Contains(routed, e2eTopicMemory) {
+	if !strings.Contains(routed, "## Injected cogmem domain: Decoy ("+decoy.ID+") — loaded because it was recently active\n") || strings.Contains(routed, e2eTopicMemory) {
 		t.Fatalf("with no signal, recency should route the decoy, not the new domain:\n%s", routed)
 	}
 
 	// (b) A tool whose name contains the trigger routes the new domain.
 	sess.RecordToolUse("mcp_" + e2eToolTrigger + "_something")
 	routed, nr = injectionText(sess.Recall(ctx, "unrelated"), PlaceCurrentUser)
-	wantRouted := "## Active Context: " + deploy.ID + " · " + e2eDomainName + "\n" +
+	wantRouted := "## Injected cogmem domain: " + e2eDomainName + " (" + deploy.ID + ") — loaded by tool trigger \"" + e2eToolTrigger + "\"\n" +
 		"Summary: " + e2eSummary + "\n" +
 		"- (" + topicMem.ID + ") (fact) " + e2eTopicMemory + " [origin: consolidation]"
 	if nr != 1 || routed != wantRouted {
@@ -309,8 +310,9 @@ func TestEndToEnd_ObserveConsolidateRecall(t *testing.T) {
 	})
 	defer fresh.Close()
 	routed, nr = injectionText(fresh.Recall(ctx, "Is the "+e2eKeyword+" on schedule?"), PlaceCurrentUser)
-	if nr != 1 || routed != wantRouted {
-		t.Fatalf("keyword-triggered routed block (n=%d):\n%q\nwant:\n%q", nr, routed, wantRouted)
+	wantKeyword := strings.Replace(wantRouted, "loaded by tool trigger \""+e2eToolTrigger+"\"", "loaded by keyword trigger \""+e2eKeyword+"\"", 1)
+	if nr != 1 || routed != wantKeyword {
+		t.Fatalf("keyword-triggered routed block (n=%d):\n%q\nwant:\n%q", nr, routed, wantKeyword)
 	}
 	ageDomain(t, st, deploy.ID) // the keyword match touched it too
 	mustTouch(t, st, decoy.ID)

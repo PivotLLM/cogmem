@@ -139,7 +139,7 @@ func TestSession_RecallPlacesStickyInSystem(t *testing.T) {
 	if ns != 1 || nr != 0 {
 		t.Fatalf("injections = %+v, want one stable and no routed", inj)
 	}
-	want := "# Learned Memory\n\nCOGMEM domain General is sticky:\n\n- (rule) always sign off as Alice"
+	want := "# Learned Memory\n\n## Injected cogmem domain: General (" + general.ID + ") — sticky, loaded every turn\n- (rule) always sign off as Alice"
 	if stable != want {
 		t.Fatalf("stable block:\n%q\nwant:\n%q", stable, want)
 	}
@@ -163,7 +163,7 @@ func TestSession_ToolTriggerRoutesToCurrentUser(t *testing.T) {
 
 	// No tool used yet: recency fills the slot with the decoy.
 	routed, n := injectionText(s.Recall(ctx, "anything else"), PlaceCurrentUser)
-	if n != 1 || !strings.Contains(routed, "## Active Context: "+decoy.ID+" · Decoy\n") || strings.Contains(routed, "Archive newsletters.") {
+	if n != 1 || !strings.Contains(routed, "## Injected cogmem domain: Decoy ("+decoy.ID+") — loaded because it was recently active\n") || strings.Contains(routed, "Archive newsletters.") {
 		t.Fatalf("before the tool use, recency should load the decoy (n=%d):\n%s", n, routed)
 	}
 
@@ -173,7 +173,7 @@ func TestSession_ToolTriggerRoutesToCurrentUser(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("want one routed injection, got %d in %+v", n, inj)
 	}
-	want := "## Active Context: " + email.ID + " · Email\nSummary: mail prefs\n- (" + mem.ID + ") (preference) Archive newsletters."
+	want := "## Injected cogmem domain: Email (" + email.ID + ") — loaded by tool trigger \"google_gmail\"\nSummary: mail prefs\n- (" + mem.ID + ") (preference) Archive newsletters."
 	if routed != want {
 		t.Fatalf("routed block:\n%q\nwant:\n%q", routed, want)
 	}
@@ -369,7 +369,7 @@ func TestSession_RecallAttachmentsFollowPlacement(t *testing.T) {
 	if strings.Contains(stable, "TOPICBODY") {
 		t.Fatalf("routed document leaked into the stable injection:\n%s", stable)
 	}
-	if !strings.Contains(routed, "## Active Context: "+topic.ID+" · Writing\n- ("+routedMem.ID+") (rule) Drafts follow the guide.") {
+	if !strings.Contains(routed, "## Injected cogmem domain: Writing ("+topic.ID+") — ") || !strings.Contains(routed, "\n- ("+routedMem.ID+") (rule) Drafts follow the guide.") {
 		t.Fatalf("routed block missing the topic memory:\n%s", routed)
 	}
 	if !strings.Contains(routed, "### Attached: files/topic.md\nFrom memory "+routedMem.ID+" (\"Drafts follow the guide.\"), 9 bytes, current as of this turn.\n\nTOPICBODY") {

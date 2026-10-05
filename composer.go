@@ -160,7 +160,7 @@ func (c *Composer) stableBlock(ctx context.Context) (string, int64, []refSite, e
 		if len(hooks) == 0 && events == 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "COGMEM domain %s is sticky:\n\n", d.Name)
+		b.WriteString(injectedHeader(d, "sticky, loaded every turn"))
 		for _, h := range hooks {
 			fmt.Fprintf(&b, "- %s %s%s\n", typePrefix(h.Type), h.Text, originSuffix(h.Origin))
 			refs = collectRef(refs, memoryRef{memoryID: h.ID, text: h.Text, ref: h.FileRef})
@@ -272,7 +272,7 @@ func (c *Composer) routedBlock(ctx context.Context, req RouteRequest) (RoutedRes
 		if err != nil {
 			return RoutedResult{}, nil, err
 		}
-		section := renderDomain(d, hooks, events)
+		section := renderDomain(d, hooks, events, cand.signal)
 		if b.Len()+len(section) > c.opt.maxChars && b.Len() > 0 {
 			break
 		}
@@ -515,9 +515,35 @@ func eventLine(n int) string {
 	}
 }
 
-func renderDomain(d store.Domain, hooks []store.Memory, events int) string {
+// injectedHeader is the first line of every domain block in the prompt. It
+// says plainly that the block is an injected cogmem domain and why it was
+// loaded, so the model can tell a memory from a request and, when the domain
+// was not needed, adjust the trigger that loaded it.
+func injectedHeader(d store.Domain, why string) string {
+	return fmt.Sprintf("## Injected cogmem domain: %s (%s) — %s\n", d.Name, d.ID, why)
+}
+
+// signalReason turns a routing signal (see routedBlock) into the reason shown
+// in the domain's header.
+func signalReason(signal string) string {
+	kind, value, _ := strings.Cut(signal, ":")
+	switch kind {
+	case "tool":
+		return fmt.Sprintf("loaded by tool trigger %q", value)
+	case "keyword":
+		return fmt.Sprintf("loaded by keyword trigger %q", value)
+	case "match":
+		return fmt.Sprintf("loaded because the message matched %q", value)
+	case "recency":
+		return "loaded because it was recently active"
+	default:
+		return "loaded by " + signal
+	}
+}
+
+func renderDomain(d store.Domain, hooks []store.Memory, events int, signal string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## Active Context: %s · %s\n", d.ID, d.Name)
+	b.WriteString(injectedHeader(d, signalReason(signal)))
 	if s := oneLine(d.Summary); s != "" {
 		fmt.Fprintf(&b, "Summary: %s\n", s)
 	}
