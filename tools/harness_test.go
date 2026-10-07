@@ -9,8 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PivotLLM/cogmem/store"
 	"github.com/PivotLLM/toolspec"
+
+	"github.com/PivotLLM/cogmem/store"
 )
 
 // harness is a set of handlers bound to a temp workspace, with the memory

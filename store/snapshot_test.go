@@ -21,14 +21,14 @@ func TestSnapshot(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	m := add(t, s, d.ID, TypeRule, "keep the build green")
-	if err := s.AppendInbox(ctx, s.DB(), 9, "user", "pending"); err != nil {
+	if err = s.AppendInbox(ctx, s.DB(), 9, "user", "pending"); err != nil {
 		t.Fatalf("inbox: %v", err)
 	}
 	rev, _ := s.StableRev(ctx)
 	_ = s.Close()
 
 	dst := filepath.Join(dir, "snap.cogmem.db")
-	if err := Snapshot(ctx, src, dst); err != nil {
+	if err = Snapshot(ctx, src, dst); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	// The snapshot opens and carries the domain, its memory, the inbox and the
@@ -37,7 +37,7 @@ func TestSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open snapshot: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	doms, err := s2.ListDomains(ctx, s2.DB(), StatusActive)
 	if err != nil {
 		t.Fatalf("list: %v", err)

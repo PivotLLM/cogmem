@@ -155,7 +155,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		t.Fatalf("second open: %v", err)
 	}
 	ctx := context.Background()
-	if err := s2.RetireMemory(ctx, s2.DB(), "hREV", "no longer true"); err != nil {
+	if err = s2.RetireMemory(ctx, s2.DB(), "hREV", "no longer true"); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
 	_ = s2.Close()
@@ -204,14 +204,14 @@ func TestPreMigrationSnapshotIsUsable(t *testing.T) {
 	// It holds the OLD shape: the review row is still review, and the dropped
 	// columns are still there. That is the point — it is what you go back to.
 	var status string
-	if err := snap.QueryRow(`SELECT status FROM memories WHERE id='hREV'`).Scan(&status); err != nil {
+	if err = snap.QueryRow(`SELECT status FROM memories WHERE id='hREV'`).Scan(&status); err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
 	if status != "review" {
 		t.Errorf("snapshot has status %q, want the pre-migration 'review'", status)
 	}
 	var n int
-	if err := snap.QueryRow(
+	if err = snap.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='source'`).Scan(&n); err != nil {
 		t.Fatalf("inspect snapshot columns: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestPreMigrationSnapshotIsUsable(t *testing.T) {
 		`SELECT MAX(version) FROM schema_migrations`:           5,
 	} {
 		var got int
-		if err := snap.QueryRow(q).Scan(&got); err != nil {
+		if err = snap.QueryRow(q).Scan(&got); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
 		if got != want {
@@ -237,7 +237,7 @@ func TestPreMigrationSnapshotIsUsable(t *testing.T) {
 		}
 	}
 	var integrity string
-	if err := snap.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+	if err = snap.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
 		t.Errorf("integrity_check = %q err=%v, want ok", integrity, err)
 	}
 	_ = snap.Close()

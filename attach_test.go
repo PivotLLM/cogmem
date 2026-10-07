@@ -100,8 +100,8 @@ func TestAttachmentFromRoutedDomain(t *testing.T) {
 func TestAttachmentDedupedAcrossMemories(t *testing.T) {
 	s := newStore(t)
 	gen := mustGeneral(t, s)
-	var ids []string
-	for i := 0; i < 3; i++ {
+	ids := make([]string, 0, 3)
+	for i := range 3 {
 		m := mustMemory(t, s, store.AddMemoryParams{
 			DomainID: gen.ID, Type: store.TypeFact, Text: fmt.Sprintf("note %d", i),
 			FileRef: "files/voice.md",

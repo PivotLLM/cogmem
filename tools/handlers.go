@@ -14,8 +14,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/PivotLLM/cogmem/store"
 	"github.com/PivotLLM/toolspec"
+
+	"github.com/PivotLLM/cogmem/store"
 )
 
 // fileSuffix tags a rendered memory with the markdown file attached to it, so a
@@ -41,7 +42,7 @@ func wrap(dir string, h handlerFunc) toolspec.ToolHandler {
 			return errResult("cognitive memory is unavailable (no memory directory configured)", nil), nil
 		}
 		dbPath := store.DBPath(dir)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: existing permissions kept; tightening is a separate decision.
 			return errResult("failed to prepare memory store directory", err), nil
 		}
 		s, err := store.Open(dbPath)
@@ -155,7 +156,7 @@ func argStrSlice(call *toolspec.ToolCall, key string) ([]string, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	if ss, ok := raw.([]string); ok {
+	if ss, isStrings := raw.([]string); isStrings {
 		return ss, true, nil
 	}
 	arr, ok := raw.([]any)
@@ -268,7 +269,7 @@ func listDomains(s *store.Store, call *toolspec.ToolCall) (string, error) {
 		// The enum in the definition is advisory to the model; the value must
 		// be checked here, or an unknown one silently lists nothing.
 		if st != string(store.StatusActive) && st != string(store.StatusArchived) {
-			return "", fmt.Errorf("status must be one of: active, archived")
+			return "", errors.New("status must be one of: active, archived")
 		}
 		statuses = append(statuses, store.Status(st))
 	}
@@ -276,14 +277,12 @@ func listDomains(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var out []store.Domain
-	out = append(out, domains...)
-	if len(out) == 0 {
+	if len(domains) == 0 {
 		return "No domains.", nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d domain(s):\n", len(out))
-	for _, d := range out {
+	fmt.Fprintf(&b, "%d domain(s):\n", len(domains))
+	for _, d := range domains {
 		summary := d.Summary
 		if summary == "" {
 			summary = "(no summary)"
@@ -384,11 +383,9 @@ func remember(s *store.Store, call *toolspec.ToolCall, host Host) (string, error
 	fileRef := argStr(call, "file")
 	var fileSize int64
 	if fileRef != "" {
-		size, err := host.checkAttachment(fileRef)
-		if err != nil {
+		if fileSize, err = host.checkAttachment(fileRef); err != nil {
 			return "", fmt.Errorf("attachment rejected: %w", err)
 		}
-		fileSize = size
 	}
 
 	domainID := argStr(call, "domain_id")
@@ -397,7 +394,8 @@ func remember(s *store.Store, call *toolspec.ToolCall, host Host) (string, error
 		if hint == "" {
 			// No domain specified → the sticky "General" domain. Re-create it if the
 			// user previously deleted it, so there's always a default home.
-			g, err := s.GeneralDomain(call.Ctx, s.DB())
+			var g store.Domain
+			g, err = s.GeneralDomain(call.Ctx, s.DB())
 			if errors.Is(err, store.ErrNotFound) {
 				g, err = s.CreateDomain(call.Ctx, s.DB(), store.CreateDomainParams{
 					Name: "General", Sticky: true, Status: store.StatusActive,
@@ -410,7 +408,8 @@ func remember(s *store.Store, call *toolspec.ToolCall, host Host) (string, error
 			domainID = g.ID
 		} else {
 			// Reuse an existing domain with that name, else create a new (non-sticky) one.
-			d, err := s.DomainByName(call.Ctx, s.DB(), hint)
+			var d store.Domain
+			d, err = s.DomainByName(call.Ctx, s.DB(), hint)
 			if errors.Is(err, store.ErrNotFound) {
 				d, err = s.CreateDomain(call.Ctx, s.DB(), store.CreateDomainParams{
 					Name:   hint,
@@ -476,8 +475,8 @@ func updateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 		p.Summary = &v
 	}
 	if _, ok := call.Args["set_sticky"]; ok {
-		v, err := argBool(call, "set_sticky", false)
-		if err != nil {
+		var v bool
+		if v, err = argBool(call, "set_sticky", false); err != nil {
 			return "", err
 		}
 		p.Sticky = &v
@@ -492,11 +491,11 @@ func updateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 		{"set_next_actions", &state.NextActions},
 		{"set_constraints", &state.Constraints},
 	} {
-		v, ok, err := argStrSlice(call, l.key)
-		if err != nil {
-			return "", err
+		v, present, listErr := argStrSlice(call, l.key)
+		if listErr != nil {
+			return "", listErr
 		}
-		if ok {
+		if present {
 			*l.dest = v
 			changedState = true
 		}
@@ -523,7 +522,7 @@ func updateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	}
 	if err := s.UpdateDomain(call.Ctx, s.DB(), id, p); err != nil {
 		if errors.Is(err, store.ErrDuplicateName) {
-			return "", fmt.Errorf("a domain named that already exists — pick a unique name")
+			return "", errors.New("a domain named that already exists — pick a unique name")
 		}
 		return "", mapErr(err, id)
 	}
@@ -548,11 +547,11 @@ func exportMemory(s *store.Store, call *toolspec.ToolCall, workspace string) (st
 	}
 	// Write into the agent's read/write files/ directory.
 	outDir := filepath.Join(workspace, "files")
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0o755); err != nil { //nolint:gosec // G301: existing permissions kept; tightening is a separate decision.
 		return "", fmt.Errorf("failed to prepare export directory: %w", err)
 	}
 	outPath := filepath.Join(outDir, exportFilename)
-	if err := os.WriteFile(outPath, []byte(doc), 0o644); err != nil {
+	if err := os.WriteFile(outPath, []byte(doc), 0o644); err != nil { //nolint:gosec // G306: existing permissions kept; tightening is a separate decision.
 		return "", fmt.Errorf("failed to write export: %w", err)
 	}
 	return fmt.Sprintf("Exported %d domain(s) and %d memory(ies) to files/%s.",

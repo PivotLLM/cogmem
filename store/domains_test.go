@@ -19,11 +19,11 @@ func TestDomainByNameAny(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.ArchiveDomain(ctx, s.DB(), old.ID); err != nil {
+	if err = s.ArchiveDomain(ctx, s.DB(), old.ID); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 	// DomainByName no longer sees it; DomainByNameAny does.
-	if _, err := s.DomainByName(ctx, s.DB(), "project"); !errors.Is(err, ErrNotFound) {
+	if _, err = s.DomainByName(ctx, s.DB(), "project"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("DomainByName of an archived domain: err = %v, want ErrNotFound", err)
 	}
 	got, err := s.DomainByNameAny(ctx, s.DB(), "  project ")
@@ -66,11 +66,11 @@ func TestCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.ArchiveDomain(ctx, s.DB(), gone.ID); err != nil {
+	if err = s.ArchiveDomain(ctx, s.DB(), gone.ID); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 	for _, txt := range []string{"a", "b", "c"} {
-		if _, err := s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d.ID, Type: TypeFact, Text: txt, Confidence: 0.9}); err != nil {
+		if _, err = s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d.ID, Type: TypeFact, Text: txt, Confidence: 0.9}); err != nil {
 			t.Fatalf("add: %v", err)
 		}
 	}
@@ -78,7 +78,7 @@ func TestCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if err := s.RetireMemory(ctx, s.DB(), retired.ID, "done"); err != nil {
+	if err = s.RetireMemory(ctx, s.DB(), retired.ID, "done"); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
 	got, err = s.Counts(ctx, s.DB())

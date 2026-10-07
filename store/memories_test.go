@@ -26,27 +26,27 @@ func TestMatchActiveMemories(t *testing.T) {
 	// More matches than SearchMemories' default page in d1, an event and a
 	// retired match too, plus one match in d2 and one non-match.
 	const n = 150
-	for i := 0; i < n; i++ {
-		if _, err := s.AddMemory(ctx, s.DB(), AddMemoryParams{
+	for i := range n {
+		if _, err = s.AddMemory(ctx, s.DB(), AddMemoryParams{
 			DomainID: d1.ID, Type: TypeFact, Text: fmt.Sprintf("Needle %d", i), Confidence: 0.9,
 		}); err != nil {
 			t.Fatalf("add %d: %v", i, err)
 		}
 	}
-	if _, err := s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d1.ID, Type: TypeEvent, Text: "needle event", Confidence: 0.9}); err != nil {
+	if _, err = s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d1.ID, Type: TypeEvent, Text: "needle event", Confidence: 0.9}); err != nil {
 		t.Fatalf("add event: %v", err)
 	}
 	gone, err := s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d1.ID, Type: TypeFact, Text: "needle retired", Confidence: 0.9})
 	if err != nil {
 		t.Fatalf("add retired: %v", err)
 	}
-	if err := s.RetireMemory(ctx, s.DB(), gone.ID, "gone"); err != nil {
+	if err = s.RetireMemory(ctx, s.DB(), gone.ID, "gone"); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
-	if _, err := s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d2.ID, Type: TypeFact, Text: "NEEDLE elsewhere", Confidence: 0.9}); err != nil {
+	if _, err = s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d2.ID, Type: TypeFact, Text: "NEEDLE elsewhere", Confidence: 0.9}); err != nil {
 		t.Fatalf("add d2: %v", err)
 	}
-	if _, err := s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d2.ID, Type: TypeFact, Text: "hay", Confidence: 0.9}); err != nil {
+	if _, err = s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: d2.ID, Type: TypeFact, Text: "hay", Confidence: 0.9}); err != nil {
 		t.Fatalf("add hay: %v", err)
 	}
 
@@ -62,8 +62,8 @@ func TestMatchActiveMemories(t *testing.T) {
 			t.Errorf("retired memory %s returned", m.ID)
 		}
 	}
-	if got, err := s.SearchMemories(ctx, s.DB(), "needle", 0, true); err != nil || len(got) >= len(all) {
-		t.Errorf("SearchMemories with the default limit returned %d (err=%v); this test needs more matches than that", len(got), err)
+	if got, searchErr := s.SearchMemories(ctx, s.DB(), "needle", 0, true); searchErr != nil || len(got) >= len(all) {
+		t.Errorf("SearchMemories with the default limit returned %d (err=%v); this test needs more matches than that", len(got), searchErr)
 	}
 
 	only2, err := s.MatchActiveMemories(ctx, s.DB(), "needle", d2.ID)

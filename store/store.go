@@ -274,13 +274,13 @@ func (s *Store) collapseConsolidationState(ctx context.Context) error {
 		if cols[col] {
 			continue
 		}
-		if _, err := s.db.ExecContext(ctx,
+		if _, err = s.db.ExecContext(ctx,
 			`ALTER TABLE consolidation_state ADD COLUMN `+col+` `+ddl); err != nil {
 			return fmt.Errorf("add %s: %w", col, err)
 		}
 	}
 	var have int
-	if err := s.db.QueryRowContext(ctx,
+	if err = s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM consolidation_state WHERE archive_path = ?`, InboxStateKey).Scan(&have); err != nil {
 		return err
 	}
@@ -288,14 +288,14 @@ func (s *Store) collapseConsolidationState(ctx context.Context) error {
 		return nil
 	}
 	var seq, seen sql.NullInt64
-	if err := s.db.QueryRowContext(ctx,
+	if err = s.db.QueryRowContext(ctx,
 		`SELECT MAX(consolidated_seq), MAX(last_seen_seq) FROM consolidation_state`).Scan(&seq, &seen); err != nil {
 		return err
 	}
 	if !seq.Valid {
 		return nil // nothing was ever consolidated
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err = s.db.ExecContext(ctx, `
 		INSERT INTO consolidation_state(archive_path, consolidated_seq, last_seen_seq, meaningful_count, last_run_at, updated_at)
 		VALUES(?,?,?,0,NULL,?)`, InboxStateKey, seq.Int64, seen.Int64, now()); err != nil {
 		return err
@@ -329,28 +329,8 @@ func (s *Store) dropLegacyDomainColumns(ctx context.Context) error {
 // created_at (then id) is kept; the rest are retired with reason "duplicate".
 // Returns how many were retired. Idempotent: a no-op once there are no dups.
 func (s *Store) DedupeActiveMemories(ctx context.Context) (int, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.id FROM memories m
-		WHERE m.status = ?
-		  AND EXISTS (
-		    SELECT 1 FROM memories e
-		    WHERE e.domain_id = m.domain_id AND e.text = m.text AND e.status = ?
-		      AND (e.created_at < m.created_at OR (e.created_at = m.created_at AND e.id < m.id))
-		  )`, string(StatusActive), string(StatusActive))
+	ids, err := s.duplicateActiveMemoryIDs(ctx)
 	if err != nil {
-		return 0, err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return 0, err
-		}
-		ids = append(ids, id)
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
 		return 0, err
 	}
 	if len(ids) == 0 {
@@ -362,10 +342,11 @@ func (s *Store) DedupeActiveMemories(ctx context.Context) (int, error) {
 		args = append(args, id)
 	}
 	err = s.WithTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
+		//nolint:gosec // G202: only the "?,?,..." placeholder list is concatenated; every value is bound.
+		if _, execErr := tx.ExecContext(ctx,
 			`UPDATE memories SET status=?, retire_reason='duplicate', updated_at=? WHERE id IN (`+
-				placeholders(len(ids))+`)`, args...); err != nil {
-			return err
+				placeholders(len(ids))+`)`, args...); execErr != nil {
+			return execErr
 		}
 		return bumpStableRev(ctx, tx)
 	})
@@ -373,6 +354,33 @@ func (s *Store) DedupeActiveMemories(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return len(ids), nil
+}
+
+// duplicateActiveMemoryIDs returns the ids DedupeActiveMemories retires: each
+// active memory that repeats an earlier active memory's text in its domain.
+// The rows are closed before returning, so the caller can open a transaction.
+func (s *Store) duplicateActiveMemoryIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id FROM memories m
+		WHERE m.status = ?
+		  AND EXISTS (
+		    SELECT 1 FROM memories e
+		    WHERE e.domain_id = m.domain_id AND e.text = m.text AND e.status = ?
+		      AND (e.created_at < m.created_at OR (e.created_at = m.created_at AND e.id < m.id))
+		  )`, string(StatusActive), string(StatusActive))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // PurgeStats reports how many rows a purge removed (or would remove on a dry run).
@@ -438,9 +446,7 @@ func Snapshot(ctx context.Context, srcPath, dstPath string) error {
 		return fmt.Errorf("cogmem snapshot: open source: %w", err)
 	}
 	defer func() { _ = db.Close() }()
-	// dstPath is workspace-derived (no user quotes); escape single quotes defensively.
-	target := strings.ReplaceAll(dstPath, "'", "''")
-	if _, err := db.ExecContext(ctx, "VACUUM INTO '"+target+"'"); err != nil {
+	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", dstPath); err != nil {
 		return fmt.Errorf("cogmem snapshot: vacuum into %s: %w", dstPath, err)
 	}
 	return nil
@@ -573,7 +579,7 @@ func (s *Store) ensureRunColumns(ctx context.Context) error {
 	if have["note"] {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx,
+	if _, err = s.db.ExecContext(ctx,
 		`ALTER TABLE consolidation_runs ADD COLUMN note TEXT`); err != nil {
 		return err
 	}
@@ -629,7 +635,7 @@ func (s *Store) columnSet(ctx context.Context, table string) (map[string]bool, e
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	set := map[string]bool{}
 	for rows.Next() {
 		var name string
@@ -654,12 +660,12 @@ func (s *Store) seedGeneralOnce(ctx context.Context) error {
 		return nil // already seeded once (or explicitly skipped) — respect deletions
 	}
 	// Mark seeded first so the one-time seed never repeats, even across upgrades.
-	if err := setMetaInt(ctx, s.db, "seeded_general", 1); err != nil {
+	if err = setMetaInt(ctx, s.db, "seeded_general", 1); err != nil {
 		return err
 	}
 	// Only seed a truly fresh DB; a migrated DB already has its domains.
 	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM domains`).Scan(&count); err != nil {
+	if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM domains`).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
@@ -744,7 +750,7 @@ func genID(prefix string) (string, error) {
 // freshID generates a unique id for the given table (an internal constant, never
 // user input), retrying on the rare collision.
 func freshID(ctx context.Context, q DBTX, prefix, table string) (string, error) {
-	for i := 0; i < idMaxAttempts; i++ {
+	for range idMaxAttempts {
 		id, err := genID(prefix)
 		if err != nil {
 			return "", err
@@ -788,7 +794,7 @@ func placeholders(n int) string {
 		return ""
 	}
 	b := make([]byte, 0, 2*n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if i > 0 {
 			b = append(b, ',')
 		}

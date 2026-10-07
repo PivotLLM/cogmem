@@ -104,7 +104,7 @@ func (s *Session) Store() *store.Store {
 	s.opened = true
 	// cogmem owns Dir; create it so a brand-new memory does not fail its first
 	// write.
-	if err := os.MkdirAll(filepath.Dir(s.dbPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.dbPath), 0o755); err != nil { //nolint:gosec // G301: existing permissions kept; tightening is a separate decision.
 		logger.WarnCF("cogmem", "create session store directory failed", map[string]any{
 			"id": s.opt.ID, "path": s.dbPath, "error": err.Error(),
 		})
@@ -135,7 +135,7 @@ func (s *Session) Observe(ctx context.Context, seq int64, role, text string) {
 	if s == nil || s.opt.Ephemeral || seq <= 0 {
 		return
 	}
-	st := s.Store()
+	st := s.Store() //nolint:contextcheck // Store opens lazily with a background context by design (OnOpen must outlive this call); Store has no ctx parameter.
 	if st == nil {
 		return
 	}
@@ -201,7 +201,7 @@ func (s *Session) RecentTools() []string {
 // tools, with their documents) for the current turn. Nil when there is nothing
 // to inject or the store could not be opened.
 func (s *Session) Recall(ctx context.Context, routeText string) []Injection {
-	if s == nil || s.Store() == nil {
+	if s == nil || s.Store() == nil { //nolint:contextcheck // Store opens lazily with a background context by design (OnOpen must outlive this call); Store has no ctx parameter.
 		return nil
 	}
 	// The composer is read under the lock: Close nils it under the same lock,

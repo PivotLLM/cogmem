@@ -175,8 +175,8 @@ func assertVersionedDataSurvived(t *testing.T, s *Store) {
 	if rule.Type != TypeRule || rule.Origin != OriginUser || rule.FileRef != "files/voice.md" || rule.Confidence != 1 {
 		t.Errorf("hGEN = %+v", rule)
 	}
-	if old, err := s.GetMemory(ctx, db, "hOLD"); err != nil || old.DomainID != "dARCH" {
-		t.Errorf("hOLD = %+v err=%v", old, err)
+	if old, getErr := s.GetMemory(ctx, db, "hOLD"); getErr != nil || old.DomainID != "dARCH" {
+		t.Errorf("hOLD = %+v err=%v", old, getErr)
 	}
 
 	events, err := s.ListEvents(ctx, db)
@@ -353,12 +353,15 @@ func TestMigrationRenamesLegacyHooksTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list indexes: %v", err)
 	}
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var n string
 		_ = rows.Scan(&n)
 		idx[n] = true
 	}
-	_ = rows.Close()
+	if err = rows.Err(); err != nil {
+		t.Fatalf("list indexes: %v", err)
+	}
 	for _, want := range []string{"idx_memories_domain", "idx_memories_status"} {
 		if !idx[want] {
 			t.Errorf("index %s missing; have %v", want, idx)
@@ -398,9 +401,9 @@ func TestMigrationRenamesLegacyHooksTables(t *testing.T) {
 		{"hINF", TypeRule, StatusActive, OriginConsolidation},
 		{"hUNK", TypeFact, StatusActive, OriginChat},
 	} {
-		m, err := s.GetMemory(ctx, db, tc.id)
-		if err != nil {
-			t.Errorf("%s lost in migration: %v", tc.id, err)
+		m, getErr := s.GetMemory(ctx, db, tc.id)
+		if getErr != nil {
+			t.Errorf("%s lost in migration: %v", tc.id, getErr)
 			continue
 		}
 		if m.Type != tc.typ || m.Status != tc.status || m.Origin != tc.origin || m.FileRef != "" {

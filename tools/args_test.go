@@ -59,7 +59,7 @@ func TestExportWithoutWorkspace(t *testing.T) {
 // one, and nothing is changed.
 func TestUnknownIDs(t *testing.T) {
 	hs := newHarness(t, nil)
-	real := hs.createDomain(t, map[string]any{"name": "Real"})
+	realDomain := hs.createDomain(t, map[string]any{"name": "Real"})
 	hs.fail(t, "domain_get", map[string]any{"id": "dZZZZZ"}, "dZZZZZ not found")
 	hs.fail(t, "domain_archive", map[string]any{"id": "dZZZZZ"}, "dZZZZZ not found")
 	hs.fail(t, "domain_update", map[string]any{"id": "dZZZZZ", "set_summary": "x"}, "dZZZZZ not found")
@@ -68,20 +68,20 @@ func TestUnknownIDs(t *testing.T) {
 	hs.fail(t, "memory_retire", map[string]any{"id": "hZZZZZ", "reason": "r"}, "hZZZZZ not found")
 	hs.fail(t, "memory_attach", map[string]any{"id": "hZZZZZ"}, "hZZZZZ not found")
 	hs.fail(t, "memory_create", map[string]any{"domain_id": "dZZZZZ", "type": "fact", "text": "x"}, "dZZZZZ not found")
-	hs.fail(t, "domain_migrate", map[string]any{"from": "dZZZZZ", "to": real}, "dZZZZZ not found")
+	hs.fail(t, "domain_migrate", map[string]any{"from": "dZZZZZ", "to": realDomain}, "dZZZZZ not found")
 	// An unknown destination is named as such, not blamed on the source.
-	hs.fail(t, "domain_migrate", map[string]any{"from": real, "to": "dYYYYY"}, "dYYYYY not found")
-	hs.fail(t, "domain_migrate", map[string]any{"from": real, "to": real}, "cogmem: from and to domains are the same")
+	hs.fail(t, "domain_migrate", map[string]any{"from": realDomain, "to": "dYYYYY"}, "dYYYYY not found")
+	hs.fail(t, "domain_migrate", map[string]any{"from": realDomain, "to": realDomain}, "cogmem: from and to domains are the same")
 	hs.fail(t, "memory_forget", map[string]any{"query": "x", "domain_id": "dZZZZZ"}, "dZZZZZ not found")
 
 	s := hs.store(t)
-	if d, err := s.GetDomain(ctx, s.DB(), real, false); err != nil || d.Status != store.StatusActive || d.Version != 1 {
+	if d, err := s.GetDomain(ctx, s.DB(), realDomain, false); err != nil || d.Status != store.StatusActive || d.Version != 1 {
 		t.Errorf("the real domain was touched by failed calls: %+v err=%v", d, err)
 	}
 	// Archiving twice is not an error: the second call is a no-op.
-	hs.ok(t, "domain_archive", map[string]any{"id": real})
-	hs.ok(t, "domain_archive", map[string]any{"id": real})
-	if d, _ := s.GetDomain(ctx, s.DB(), real, false); d.Status != store.StatusArchived || d.Version != 2 {
+	hs.ok(t, "domain_archive", map[string]any{"id": realDomain})
+	hs.ok(t, "domain_archive", map[string]any{"id": realDomain})
+	if d, _ := s.GetDomain(ctx, s.DB(), realDomain, false); d.Status != store.StatusArchived || d.Version != 2 {
 		t.Errorf("after two archives: %+v, want archived at version 2", d)
 	}
 }
@@ -137,7 +137,7 @@ func TestForgetRetiresEveryMatch(t *testing.T) {
 	domainID := hs.createDomain(t, map[string]any{"name": "Bulk"})
 	s := hs.store(t)
 	const n = 105
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if _, err := s.AddMemory(ctx, s.DB(), store.AddMemoryParams{
 			DomainID: domainID, Type: store.TypeFact, Text: fmt.Sprintf("bulk item %03d", i),
 			Status: store.StatusActive, Confidence: 0.9,
@@ -286,7 +286,7 @@ func TestCreateRecreatesDeletedGeneral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seeded General: %v", err)
 	}
-	if err := s.DeleteDomain(ctx, s.DB(), gen.ID); err != nil {
+	if err = s.DeleteDomain(ctx, s.DB(), gen.ID); err != nil {
 		t.Fatalf("delete General: %v", err)
 	}
 	got := hs.ok(t, "memory_create", map[string]any{"type": "fact", "text": "needs a home"})
@@ -350,4 +350,23 @@ func TestDomainMigrateReportsCount(t *testing.T) {
 		}
 	}
 	hs.fail(t, "domain_get", map[string]any{"id": from}, from+" not found")
+}
+
+// asFloat accepts every Go numeric type and rejects everything else.
+func TestAsFloat(t *testing.T) {
+	for _, v := range []any{
+		float64(7), float32(7),
+		int(7), int8(7), int16(7), int32(7), int64(7),
+		uint(7), uint8(7), uint16(7), uint32(7), uint64(7),
+	} {
+		f, ok := asFloat(v)
+		if !ok || f != 7 {
+			t.Errorf("asFloat(%T 7) = %v, %v; want 7, true", v, f, ok)
+		}
+	}
+	for _, v := range []any{nil, "7", true, []int{7}} {
+		if _, ok := asFloat(v); ok {
+			t.Errorf("asFloat(%T %v) accepted a non-number", v, v)
+		}
+	}
 }

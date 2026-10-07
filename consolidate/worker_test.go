@@ -840,3 +840,34 @@ func TestRunOnceDebugDump(t *testing.T) {
 		t.Errorf("dump user_json new_messages = %+v, want %+v", in.NewMessages, meaningfulMessages())
 	}
 }
+
+// A model that wraps its JSON in a Markdown fence (with or without a language
+// tag) still parses; an unterminated fence is tolerated too.
+func TestParseOutputStripsFence(t *testing.T) {
+	const body = `{"memory_ops":[{"op":"add","domain":"d1","type":"fact","text":"ok"}]}`
+	for name, raw := range map[string]string{
+		"plain":           body,
+		"json fence":      "```json\n" + body + "\n```",
+		"bare fence":      "```\n" + body + "\n```",
+		"padded fence":    "\n  ```json\n" + body + "\n```  \n",
+		"no closing line": "```json\n" + body,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := ParseOutput(raw)
+			if err != nil {
+				t.Fatalf("ParseOutput: %v", err)
+			}
+			if len(out.MemoryOps) != 1 || out.MemoryOps[0].Text != "ok" {
+				t.Fatalf("memory ops = %+v, want one op with text ok", out.MemoryOps)
+			}
+		})
+	}
+}
+
+// A fence with nothing after the opening marker is not JSON and must fail
+// rather than parse as an empty output.
+func TestParseOutputRejectsBareFence(t *testing.T) {
+	if _, err := ParseOutput("```json"); err == nil {
+		t.Fatal("ParseOutput succeeded on a lone fence, want an error")
+	}
+}

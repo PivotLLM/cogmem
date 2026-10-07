@@ -48,6 +48,9 @@ func countMemories(t *testing.T, s *store.Store) map[string]bool {
 		}
 		present[id] = true
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return present
 }
 

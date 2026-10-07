@@ -69,7 +69,7 @@ drain:
 			break drain
 		}
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		select {
 		case <-c.ticks:
 		case <-time.After(waitTimeout):
@@ -228,7 +228,7 @@ func TestRunJobDrainsInboxThroughRealWorker(t *testing.T) {
 
 	job := Job{ID: "a", Dir: dir, Workspace: ws}
 	m.Enqueue(job, "manual")
-	for i := 0; i < len(msgs); i++ {
+	for range msgs {
 		recv(t, model.called, "model call")
 	}
 	// Stop waits for the in-flight job, so everything below is settled.
@@ -375,12 +375,12 @@ func TestConcurrencyCapRespected(t *testing.T) {
 
 func TestPerStoreDedup(t *testing.T) {
 	logs := installCapture(t)
-	var calls int32
+	var calls atomic.Int32
 	release := make(chan struct{})
 	started := make(chan struct{}, 1)
 	m := NewManager(func(Job) (*Worker, error) { return nil, nil }, WithConcurrency(4))
 	m.runFn = func(_ context.Context, _ Job, _ string) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		select {
 		case started <- struct{}{}:
 		default:
@@ -397,13 +397,13 @@ func TestPerStoreDedup(t *testing.T) {
 	// and each skip is logged.
 	m.Enqueue(job, "manual")
 	m.Enqueue(job, "idle")
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		e := logs.wait(t, "consolidation job skipped; run already in flight")
 		if e.fields["dir"] != job.Dir {
 			t.Errorf("skip %d logged dir %v, want %q", i, e.fields["dir"], job.Dir)
 		}
 	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
+	if got := calls.Load(); got != 1 {
 		t.Fatalf("expected 1 in-flight run for same archive, got %d", got)
 	}
 	close(release)
@@ -469,7 +469,7 @@ func TestIdleLoop(t *testing.T) {
 		trigger string
 		dir     string
 	}
-	base := time.Date(2026, 6, 14, 10, 0, 0, 0, time.Local)
+	base := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
 	clk := newFakeClock(base)
 	fired := make(chan fire, 16)
 	m := newTestManager(t, func(j Job, trigger string) { fired <- fire{trigger, j.Dir} },
@@ -530,7 +530,7 @@ func TestIdleLoop(t *testing.T) {
 
 func TestNightlyLoopEnqueuesEverySession(t *testing.T) {
 	logs := installCapture(t)
-	base := time.Date(2026, 6, 14, 2, 59, 59, 990_000_000, time.Local)
+	base := time.Date(2026, 6, 14, 2, 59, 59, 990_000_000, time.Local) //nolint:gosmopolitan // production runs in the local zone.
 	clk := newFakeClock(base)
 	fired := make(chan Job, 16)
 	m := newTestManager(t, func(j Job, trigger string) {
@@ -554,7 +554,7 @@ func TestNightlyLoopEnqueuesEverySession(t *testing.T) {
 	m.Start(context.Background())
 
 	got := map[string]Job{}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		j := recv(t, fired, "nightly fire")
 		if _, dup := got[j.Dir]; dup {
 			t.Fatalf("session %q fired nightly twice", j.Dir)
@@ -586,36 +586,46 @@ func TestParseHHMM(t *testing.T) {
 func TestNextNightly(t *testing.T) {
 	m := NewManager(nil, WithNightlyAt("03:15"))
 
-	// After today's slot: tomorrow at 03:15 exactly.
-	from := time.Date(2026, 6, 14, 10, 0, 0, 0, time.Local)
-	got := m.nextNightly(from)
-	want := time.Date(2026, 6, 15, 3, 15, 0, 0, time.Local)
-	if !got.Equal(want) {
-		t.Fatalf("nextNightly(%v) = %v, want %v", from, got, want)
+	// Production passes time.Now(), so the local zone is the case that
+	// matters; UTC checks the slot follows from's zone rather than Local.
+	zones := map[string]*time.Location{
+		"local": time.Local, //nolint:gosmopolitan // production runs in the local zone.
+		"utc":   time.UTC,
 	}
+	for name, loc := range zones {
+		t.Run(name, func(t *testing.T) {
+			// After today's slot: tomorrow at 03:15 exactly.
+			from := time.Date(2026, 6, 14, 10, 0, 0, 0, loc)
+			got := m.nextNightly(from)
+			want := time.Date(2026, 6, 15, 3, 15, 0, 0, loc)
+			if !got.Equal(want) {
+				t.Fatalf("nextNightly(%v) = %v, want %v", from, got, want)
+			}
 
-	// Before today's slot: later today.
-	from = time.Date(2026, 6, 14, 1, 0, 0, 0, time.Local)
-	got = m.nextNightly(from)
-	want = time.Date(2026, 6, 14, 3, 15, 0, 0, time.Local)
-	if !got.Equal(want) {
-		t.Fatalf("nextNightly(%v) = %v, want same-day %v", from, got, want)
-	}
+			// Before today's slot: later today.
+			from = time.Date(2026, 6, 14, 1, 0, 0, 0, loc)
+			got = m.nextNightly(from)
+			want = time.Date(2026, 6, 14, 3, 15, 0, 0, loc)
+			if !got.Equal(want) {
+				t.Fatalf("nextNightly(%v) = %v, want same-day %v", from, got, want)
+			}
 
-	// Exactly at the slot counts as passed.
-	from = want
-	got = m.nextNightly(from)
-	if !got.Equal(want.AddDate(0, 0, 1)) {
-		t.Fatalf("nextNightly(at slot) = %v, want next day", got)
+			// Exactly at the slot counts as passed.
+			from = want
+			got = m.nextNightly(from)
+			if !got.Equal(want.AddDate(0, 0, 1)) {
+				t.Fatalf("nextNightly(at slot) = %v, want next day", got)
+			}
+		})
 	}
 }
 
 func TestNextNightlyJitterStaysInWindow(t *testing.T) {
 	const jitter = time.Hour
 	m := NewManager(nil, WithNightlyAt("03:00"), WithNightlyJitter(jitter))
-	from := time.Date(2026, 6, 14, 10, 0, 0, 0, time.Local)
-	base := time.Date(2026, 6, 15, 3, 0, 0, 0, time.Local)
-	for i := 0; i < 50; i++ {
+	from := time.Date(2026, 6, 14, 10, 0, 0, 0, time.Local) //nolint:gosmopolitan // production runs in the local zone.
+	base := time.Date(2026, 6, 15, 3, 0, 0, 0, time.Local)  //nolint:gosmopolitan // production runs in the local zone.
+	for range 50 {
 		got := m.nextNightly(from)
 		if got.Before(base) || !got.Before(base.Add(jitter)) {
 			t.Fatalf("nextNightly = %v, want within [%v, %v)", got, base, base.Add(jitter))

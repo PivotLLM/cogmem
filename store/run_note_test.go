@@ -84,7 +84,7 @@ func TestOpenAddsNoteColumnToExistingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open raw: %v", err)
 	}
-	if _, err := raw.Exec(`
+	if _, err = raw.Exec(`
 		CREATE TABLE consolidation_runs (
 		  id            TEXT PRIMARY KEY,
 		  trigger       TEXT NOT NULL,
@@ -103,13 +103,13 @@ func TestOpenAddsNoteColumnToExistingDatabase(t *testing.T) {
 		t.Fatalf("create legacy table: %v", err)
 	}
 	// A historical row, as prod has: a note stranded in the error column.
-	if _, err := raw.Exec(`INSERT INTO consolidation_runs
+	if _, err = raw.Exec(`INSERT INTO consolidation_runs
 		(id, trigger, model, status, ops_applied, error, started_at)
 		VALUES ('r1','manual','old-model','ok',5,'auto-repaired: memory_ops[0]: inferred item active→review',1)`,
 	); err != nil {
 		t.Fatalf("insert legacy row: %v", err)
 	}
-	if err := raw.Close(); err != nil {
+	if err = raw.Close(); err != nil {
 		t.Fatalf("close raw: %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestOpenAddsNoteColumnToExistingDatabase(t *testing.T) {
 	}
 
 	// And a NEW run on the migrated database uses the new column properly.
-	if err := s.RecordRun(ctx, s.DB(), Run{
+	if err = s.RecordRun(ctx, s.DB(), Run{
 		Trigger: "manual", Model: "m", Status: "ok", OpsApplied: 1,
 		Note: "auto-repaired: memory_ops[0]: inferred item active→review",
 	}); err != nil {
@@ -159,7 +159,7 @@ func TestMigrationLeavesRealFailuresAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open raw: %v", err)
 	}
-	if _, err := raw.Exec(`
+	if _, err = raw.Exec(`
 		CREATE TABLE consolidation_runs (
 		  id TEXT PRIMARY KEY, trigger TEXT NOT NULL, model TEXT NOT NULL,
 		  seq_start INTEGER, seq_end INTEGER, input_tokens INTEGER,
@@ -181,7 +181,7 @@ func TestMigrationLeavesRealFailuresAlone(t *testing.T) {
 		{"r5", "ok", "mark consolidated: disk full"},
 	}
 	for i, r := range rows {
-		if _, err := raw.Exec(
+		if _, err = raw.Exec(
 			`INSERT INTO consolidation_runs (id,trigger,model,status,ops_applied,error,started_at)
 			 VALUES (?,'manual','m',?,0,?,?)`, r.id, r.status, r.errText, i+1); err != nil {
 			t.Fatalf("insert %s: %v", r.id, err)
@@ -204,10 +204,13 @@ func TestMigrationLeavesRealFailuresAlone(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 	for rs.Next() {
 		var id, e, n string
-		if err := rs.Scan(&id, &e, &n); err != nil {
+		if err = rs.Scan(&id, &e, &n); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		got[id] = [2]string{e, n}
+	}
+	if err = rs.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
 	}
 
 	for _, id := range []string{"r1", "r2", "r3", "r5"} {

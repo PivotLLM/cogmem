@@ -68,8 +68,10 @@ func TestSession_NilAndEphemeralAreNoOps(t *testing.T) {
 	none.Close()
 
 	opened := false
-	sub := NewSession(SessionOptions{ID: "alice/sub", Dir: filepath.Join(t.TempDir(), "snap"), Ephemeral: true,
-		OnOpen: func(context.Context, *store.Store) { opened = true }})
+	sub := NewSession(SessionOptions{
+		ID: "alice/sub", Dir: filepath.Join(t.TempDir(), "snap"), Ephemeral: true,
+		OnOpen: func(context.Context, *store.Store) { opened = true },
+	})
 	defer sub.Close()
 	sub.Observe(ctx, 1, "user", "x")
 	if n, _ := sub.Store().InboxCount(ctx, sub.Store().DB()); n != 0 {
@@ -82,8 +84,10 @@ func TestSession_NilAndEphemeralAreNoOps(t *testing.T) {
 
 func TestSession_OnOpenRunsOnce(t *testing.T) {
 	calls := 0
-	s := NewSession(SessionOptions{ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem"),
-		OnOpen: func(context.Context, *store.Store) { calls++ }})
+	s := NewSession(SessionOptions{
+		ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem"),
+		OnOpen: func(context.Context, *store.Store) { calls++ },
+	})
 	defer s.Close()
 	s.Store()
 	s.Store()
@@ -96,15 +100,17 @@ func TestSession_OnOpenRunsOnce(t *testing.T) {
 // Many goroutines racing to open the store see one store and one OnOpen.
 func TestSession_OnOpenOnceUnderConcurrentStore(t *testing.T) {
 	var calls int32
-	s := NewSession(SessionOptions{ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem"),
-		OnOpen: func(context.Context, *store.Store) { atomic.AddInt32(&calls, 1) }})
+	s := NewSession(SessionOptions{
+		ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem"),
+		OnOpen: func(context.Context, *store.Store) { atomic.AddInt32(&calls, 1) },
+	})
 	defer s.Close()
 
 	const n = 16
 	got := make([]*store.Store, n)
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -192,8 +198,7 @@ func TestSession_ObserveNudgesManager(t *testing.T) {
 		return nil, errors.New("no worker in this test")
 	}
 	m := consolidate.NewManager(factory, consolidate.WithEveryNMessages(2))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	m.Start(ctx)
 	defer m.Stop()
 
@@ -276,26 +281,24 @@ func TestSession_ConcurrentUseAndClose(t *testing.T) {
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			for j := 0; j < 25; j++ {
+			for j := range 25 {
 				s.RecordToolUse(fmt.Sprintf("mcp_gmail_%d_%d", i, j))
 				_ = s.RecentTools()
 				s.Observe(ctx, int64(i*100+j+1), "user", "message")
 				_ = s.Recall(ctx, "check my email")
-				_ = s.Store()
+				_ = s.Store() //nolint:contextcheck // Store takes no context by design.
 			}
 		}(i)
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-start
 		s.Close()
-	}()
+	})
 	close(start)
 	wg.Wait()
 
@@ -319,8 +322,10 @@ func TestSession_UnopenableStoreIsInert(t *testing.T) {
 	if err := os.WriteFile(parent, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewSession(SessionOptions{ID: "alice", Dir: filepath.Join(parent, "cogmem"),
-		OnOpen: func(context.Context, *store.Store) { t.Error("OnOpen must not run when the store cannot open") }})
+	s := NewSession(SessionOptions{
+		ID: "alice", Dir: filepath.Join(parent, "cogmem"),
+		OnOpen: func(context.Context, *store.Store) { t.Error("OnOpen must not run when the store cannot open") },
+	})
 	ctx := context.Background()
 	s.Observe(ctx, 1, "user", "hello")
 	if s.Store() != nil {

@@ -199,7 +199,7 @@ func TestEndToEnd_ObserveConsolidateRecall(t *testing.T) {
 		t.Fatalf("request = {JSONObject:%v System:%d bytes Exclude:%v}", req.JSONObject, len(req.System), req.Exclude)
 	}
 	var in consolidate.Input
-	if err := json.Unmarshal([]byte(req.User), &in); err != nil {
+	if err = json.Unmarshal([]byte(req.User), &in); err != nil {
 		t.Fatalf("user payload is not an Input: %v\n%s", err, req.User)
 	}
 	if !reflect.DeepEqual(in.NewMessages, observed) {

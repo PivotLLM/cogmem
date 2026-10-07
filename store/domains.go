@@ -200,10 +200,10 @@ func (s *Store) MigrateDomain(ctx context.Context, q DBTX, fromID, toID string) 
 	if fromID == toID {
 		return 0, errors.New("cogmem: from and to domains are the same")
 	}
-	if _, err := s.GetDomain(ctx, q, fromID, false); err != nil {
+	if _, err = s.GetDomain(ctx, q, fromID, false); err != nil {
 		return 0, err
 	}
-	if _, err := s.GetDomain(ctx, q, toID, false); err != nil {
+	if _, err = s.GetDomain(ctx, q, toID, false); err != nil {
 		return 0, err
 	}
 	res, err := q.ExecContext(ctx, `UPDATE memories SET domain_id=? WHERE domain_id=?`, toID, fromID)
@@ -309,7 +309,7 @@ func (s *Store) ListDomains(ctx context.Context, q DBTX, statuses ...Status) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Domain
 	for rows.Next() {
 		d, err := scanDomain(rows)

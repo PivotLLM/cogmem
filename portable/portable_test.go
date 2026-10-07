@@ -5,6 +5,7 @@ package portable
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -58,7 +59,7 @@ func seed(t *testing.T, s *store.Store) {
 		{store.TypeOperational, "Craft rules live at files/craft.md.", store.OriginChat, "files/craft.md"},
 		{store.TypeEvent, "Chapter 1 delivered Sep 4.", store.OriginChat, ""},
 	} {
-		if _, err := s.AddMemory(ctx, s.DB(), store.AddMemoryParams{
+		if _, err = s.AddMemory(ctx, s.DB(), store.AddMemoryParams{
 			DomainID: d.ID, Type: m.typ, Text: m.text,
 			Status: store.StatusActive, Confidence: 0.9, Origin: m.origin, FileRef: m.file,
 		}); err != nil {
@@ -72,7 +73,7 @@ func seed(t *testing.T, s *store.Store) {
 	if err != nil {
 		t.Fatalf("add retired: %v", err)
 	}
-	if err := s.RetireMemory(ctx, s.DB(), retired.ID, "superseded"); err != nil {
+	if err = s.RetireMemory(ctx, s.DB(), retired.ID, "superseded"); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
 
@@ -83,7 +84,7 @@ func seed(t *testing.T, s *store.Store) {
 	if err != nil {
 		t.Fatalf("create sticky domain: %v", err)
 	}
-	if _, err := s.AddMemory(ctx, s.DB(), store.AddMemoryParams{
+	if _, err = s.AddMemory(ctx, s.DB(), store.AddMemoryParams{
 		DomainID: sticky.ID, Type: store.TypeRule, Text: "Reply in English.",
 		Status: store.StatusActive, Confidence: 1, Origin: store.OriginUser,
 	}); err != nil {
@@ -310,7 +311,7 @@ func TestExportDropsEvidenceAndImportDoesNotKeepCreatedAt(t *testing.T) {
 	}
 	// Backdate created_at so it is distinguishable from "now" after import.
 	old := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
-	if _, err := src.DB().ExecContext(ctx,
+	if _, err = src.DB().ExecContext(ctx,
 		`UPDATE memories SET created_at=?, updated_at=? WHERE id=?`,
 		old.Unix(), old.Unix()+3600, second.ID); err != nil {
 		t.Fatalf("backdate: %v", err)
@@ -343,7 +344,7 @@ func TestExportDropsEvidenceAndImportDoesNotKeepCreatedAt(t *testing.T) {
 	}
 
 	dst := newStore(t, "drop-dst.cogmem.db")
-	if _, err := Import(ctx, dst, doc, ImportMerge); err != nil {
+	if _, err = Import(ctx, dst, doc, ImportMerge); err != nil {
 		t.Fatalf("import: %v", err)
 	}
 	imported, err := dst.DomainByName(ctx, dst.DB(), "Evidence")
@@ -459,7 +460,7 @@ func TestMergeIsAdditiveAndRepeatable(t *testing.T) {
 	if first != want {
 		t.Errorf("first merge = %+v, want %+v", first, want)
 	}
-	if _, err := dst.GetMemory(ctx, dst.DB(), kept.ID); err != nil {
+	if _, err = dst.GetMemory(ctx, dst.DB(), kept.ID); err != nil {
 		t.Errorf("merge destroyed an existing memory: %v", err)
 	}
 	if craft, _ := dst.GetDomain(ctx, dst.DB(), d.ID, false); craft.Summary != "how to write" || craft.Triggers != "file_write" {
@@ -578,6 +579,36 @@ func TestMergeAppliesDocumentDomainFields(t *testing.T) {
 
 // Merge dedup is by exact text after trimming, and case-sensitive: whitespace
 // around a memory does not make it new, but a change of case does.
+// A domain the document names that cannot be read must stop the import with
+// the read error, not be taken as missing and fail as a duplicate name.
+func TestMergeFailsWhenDomainLookupFails(t *testing.T) {
+	ctx := context.Background()
+	dst := newStore(t, "lf-dst.cogmem.db")
+	existing, err := dst.CreateDomain(ctx, dst.DB(), store.CreateDomainParams{Name: "Craft"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err = dst.DB().ExecContext(ctx, `UPDATE domains SET state_json='{' WHERE id=?`, existing.ID); err != nil {
+		t.Fatalf("corrupt state: %v", err)
+	}
+	doc := Document{FormatVersion: FormatVersion, Domains: []Domain{{Name: "Craft", Status: "active"}}}
+
+	_, err = Import(ctx, dst, doc, ImportMerge)
+	if err == nil {
+		t.Fatal("merge succeeded, want the lookup error")
+	}
+	if errors.Is(err, store.ErrDuplicateName) || !strings.Contains(err.Error(), "bad state_json") {
+		t.Fatalf("merge error = %v, want the state_json read error", err)
+	}
+	var n int
+	if err = dst.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM domains WHERE name='Craft'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("domains named Craft = %d, want 1", n)
+	}
+}
+
 func TestMergeDedupIsTrimmedAndCaseSensitive(t *testing.T) {
 	ctx := context.Background()
 	dst := newStore(t, "dd-dst.cogmem.db")

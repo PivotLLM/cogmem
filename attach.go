@@ -162,10 +162,7 @@ func (c *Composer) attachmentsBlock(stableSites, routedSites []refSite) (stable,
 				provenance(owners), c.opt.fileTotalMaxBytes)
 			continue
 		}
-		limit := c.opt.fileMaxBytes
-		if limit > remaining {
-			limit = remaining
-		}
+		limit := min(c.opt.fileMaxBytes, remaining)
 
 		att, err := c.opt.loadAttachment(ref, limit)
 		if err != nil {

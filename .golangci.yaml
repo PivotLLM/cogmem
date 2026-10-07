@@ -1,0 +1,124 @@
+# cogmem lint configuration, based on the house config. The set of disabled
+# linters is the house decision; settings exist only for linters that run.
+version: "2"
+
+linters:
+  default: all
+  disable:
+    # House defaults: style opinions the project does not hold.
+    - containedctx
+    - cyclop
+    - depguard
+    - dupword
+    - gomodguard
+    - err113
+    - exhaustruct
+    - exhaustruct_v5
+    - funcorder
+    - gochecknoglobals
+    - godot
+    - intrange
+    - ireturn
+    - nlreturn
+    - noctx
+    - noinlineerr
+    - nonamedreturns
+    - tagliatelle
+    - testpackage
+    - varnamelen
+    - wrapcheck
+    - wsl
+    - wsl_v5
+
+    # Not adopted (house decision, 2026-09-19): high-volume style opinions,
+    # or (revive with every rule) not a useful signal without a curated rule
+    # set. forbidigo, gochecknoinits and godox report nothing here today.
+    - forbidigo
+    - gochecknoinits
+    - goconst
+    - godox
+    - lll
+    - mnd
+    - paralleltest
+    - revive
+    - tagalign
+
+    # Deferred (house decision): complexity limits, and checks whose fixes
+    # change signatures or restructure functions rather than fix a line.
+    - embeddedstructfieldcheck
+    - funlen
+    - gocognit
+    - gocyclo
+    - maintidx
+    - nestif
+    - nilnil
+    - testifylint
+    - unparam
+  settings:
+    errcheck:
+      check-type-assertions: true
+      # `_ = f()` is an explicit decision to ignore the error and is allowed.
+      check-blank: false
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocritic:
+      disabled-checks:
+        # Style-only; the checks that find real problems stay on.
+        - ifElseChain
+        - elseif
+    gosec:
+      excludes:
+        # G104 (unhandled errors) is the same check as errcheck.
+        - G104
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    modernize:
+      disable:
+        # omitzero changes what the JSON encoders emit; the consolidation
+        # contract and export formats keep omitempty semantics.
+        - omitzero
+        # newexpr rewrites toolspec.Allow(allow) to new(allow). Allow is the
+        # toolspec API's documented way to set DefaultAllow; new(...) does
+        # not say what the pointer means.
+        - newexpr
+    misspell:
+      # No locale: Canadian English takes British -our/-re but American -ize,
+      # so neither US nor UK fits. Unset, misspell reports only plain typos.
+      locale: ""
+    nakedret:
+      max-func-lines: 3
+  exclusions:
+    generated: lax
+    rules:
+      # Tests read their own fixtures and use fixed paths; gosec on them is
+      # noise that would need a directive per line.
+      - linters:
+          - gosec
+        path: _test\.go$
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - localmodule
+      custom-order: true
+    gofmt:
+      simplify: true
+      rewrite-rules:
+        - pattern: "interface{}"
+          replacement: "any"
+        - pattern: "a[b:len(a)]"
+          replacement: "a[b:]"

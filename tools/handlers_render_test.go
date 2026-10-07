@@ -311,7 +311,7 @@ func TestDomainCreateStickyAndList(t *testing.T) {
 		t.Errorf("default create = %q, want sticky=false", got)
 	}
 	doneID := hs.createDomain(t, map[string]any{"name": "Done"})
-	if got := hs.ok(t, "domain_archive", map[string]any{"id": doneID}); got != fmt.Sprintf("Archived domain %s.", doneID) {
+	if got = hs.ok(t, "domain_archive", map[string]any{"id": doneID}); got != fmt.Sprintf("Archived domain %s.", doneID) {
 		t.Errorf("archive = %q", got)
 	}
 	gen, _ := s.GeneralDomain(ctx, s.DB())

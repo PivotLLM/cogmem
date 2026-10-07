@@ -206,13 +206,13 @@ func TestNormalizeLegacyTypes(t *testing.T) {
 	topic, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "P"})
 	legacyGen, _ := s.CreateDomain(ctx, s.DB(), CreateDomainParams{Name: "LegacyGlobal"})
 	m, _ := s.AddMemory(ctx, s.DB(), AddMemoryParams{DomainID: topic.ID, Type: TypeFact, Text: "x", Status: StatusActive, Confidence: 0.9})
-	if _, err := s.DB().ExecContext(ctx, `UPDATE memories SET type='lesson' WHERE id=?`, m.ID); err != nil {
+	if _, err = s.DB().ExecContext(ctx, `UPDATE memories SET type='lesson' WHERE id=?`, m.ID); err != nil {
 		t.Fatalf("force legacy memory type: %v", err)
 	}
-	if _, err := s.DB().ExecContext(ctx, `UPDATE domains SET type='repo' WHERE id=?`, topic.ID); err != nil {
+	if _, err = s.DB().ExecContext(ctx, `UPDATE domains SET type='repo' WHERE id=?`, topic.ID); err != nil {
 		t.Fatalf("force legacy domain type: %v", err)
 	}
-	if _, err := s.DB().ExecContext(ctx, `UPDATE domains SET type='general' WHERE id=?`, legacyGen.ID); err != nil {
+	if _, err = s.DB().ExecContext(ctx, `UPDATE domains SET type='general' WHERE id=?`, legacyGen.ID); err != nil {
 		t.Fatalf("force legacy general type: %v", err)
 	}
 	_ = s.Close()
@@ -222,7 +222,7 @@ func TestNormalizeLegacyTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	gm, _ := s2.GetMemory(ctx, s2.DB(), m.ID)
 	if gm.Type != TypeFact {
 		t.Fatalf("memory type = %q, want fact", gm.Type)
@@ -297,7 +297,7 @@ func TestSeedGeneralOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seeded general missing: %v", err)
 	}
-	if err := s.DeleteDomain(ctx, s.DB(), g.ID); err != nil {
+	if err = s.DeleteDomain(ctx, s.DB(), g.ID); err != nil {
 		t.Fatalf("delete general: %v", err)
 	}
 	_ = s.Close()
@@ -306,7 +306,7 @@ func TestSeedGeneralOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if _, err := s2.GeneralDomain(ctx, s2.DB()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("General was re-seeded after deletion (err=%v); seed must run only once", err)
 	}

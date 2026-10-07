@@ -292,7 +292,7 @@ func (s *Store) queryMemories(ctx context.Context, q DBTX, query string, args ..
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Memory
 	for rows.Next() {
 		h, err := scanMemory(rows)

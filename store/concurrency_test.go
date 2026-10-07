@@ -126,7 +126,7 @@ func TestConcurrentWritersDoNotError(t *testing.T) {
 	const workers, perWorker = 8, 25
 	var wg sync.WaitGroup
 	errs := make(chan error, workers*perWorker)
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		st := a
 		if w%2 == 1 {
 			st = b
@@ -134,7 +134,7 @@ func TestConcurrentWritersDoNotError(t *testing.T) {
 		wg.Add(1)
 		go func(w int, st *Store) {
 			defer wg.Done()
-			for i := 0; i < perWorker; i++ {
+			for i := range perWorker {
 				seq := int64(w*perWorker + i + 1)
 				if err := st.AppendInbox(ctx, st.DB(), seq, "user", fmt.Sprintf("w%d-%d", w, i)); err != nil {
 					errs <- fmt.Errorf("worker %d inbox %d: %w", w, seq, err)
@@ -212,17 +212,17 @@ func TestSnapshotUnderLiveWriter(t *testing.T) {
 	}
 	add(t, s, d.ID, TypeFact, "written before the snapshot")
 	for seq := int64(1); seq <= 3; seq++ {
-		if err := s.AppendInbox(ctx, s.DB(), seq, "user", "m"); err != nil {
+		if err = s.AppendInbox(ctx, s.DB(), seq, "user", "m"); err != nil {
 			t.Fatalf("inbox: %v", err)
 		}
 	}
 	// The writes are committed to the WAL, which has not been checkpointed.
-	if fi, err := os.Stat(src + "-wal"); err != nil || fi.Size() == 0 {
-		t.Fatalf("expected a non-empty WAL beside the open source (err=%v)", err)
+	if fi, statErr := os.Stat(src + "-wal"); statErr != nil || fi.Size() == 0 {
+		t.Fatalf("expected a non-empty WAL beside the open source (err=%v)", statErr)
 	}
 
 	dst := filepath.Join(dir, "copy.cogmem.db")
-	if err := Snapshot(ctx, src, dst); err != nil {
+	if err = Snapshot(ctx, src, dst); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	// Still open, still writing: this must not reach the copy.
@@ -261,10 +261,10 @@ func TestSnapshotReplacesExistingDestination(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 	dst := filepath.Join(dir, "copy.cogmem.db")
-	if err := os.WriteFile(dst, []byte("not a database"), 0o600); err != nil {
+	if err = os.WriteFile(dst, []byte("not a database"), 0o600); err != nil {
 		t.Fatalf("write stale: %v", err)
 	}
-	if err := Snapshot(ctx, src, dst); err != nil {
+	if err = Snapshot(ctx, src, dst); err != nil {
 		t.Fatalf("snapshot over a stale file: %v", err)
 	}
 	s2, err := Open(dst)

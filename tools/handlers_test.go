@@ -12,8 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PivotLLM/cogmem/portable"
 	"github.com/PivotLLM/toolspec"
+
+	"github.com/PivotLLM/cogmem/portable"
 )
 
 const testSession = "chan:123"

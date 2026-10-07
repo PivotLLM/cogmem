@@ -16,6 +16,7 @@ package portable
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -187,7 +188,7 @@ func Unmarshal(data []byte) (Document, error) {
 		return Document{}, fmt.Errorf("cogmem: parse import: %w", err)
 	}
 	if doc.FormatVersion == 0 {
-		return Document{}, fmt.Errorf("cogmem: not a memory export (no format_version)")
+		return Document{}, errors.New("cogmem: not a memory export (no format_version)")
 	}
 	if doc.FormatVersion > FormatVersion {
 		return Document{}, fmt.Errorf(
@@ -259,12 +260,12 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode)
 		case err == nil:
 			res.DomainsMatched++
 			if p, changed := domainPatch(target, d); changed {
-				if err := st.UpdateDomain(ctx, st.DB(), target.ID, p); err != nil {
+				if err = st.UpdateDomain(ctx, st.DB(), target.ID, p); err != nil {
 					return res, fmt.Errorf("cogmem: import: update domain %q: %w", name, err)
 				}
 				res.DomainsUpdated++
 			}
-		default:
+		case errors.Is(err, store.ErrNotFound):
 			target, err = st.CreateDomain(ctx, st.DB(), store.CreateDomainParams{
 				Sticky:  d.Sticky,
 				Name:    name,
@@ -282,6 +283,8 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode)
 				return res, fmt.Errorf("cogmem: import: create domain %q: %w", name, err)
 			}
 			res.DomainsCreated++
+		default:
+			return res, fmt.Errorf("cogmem: import: look up domain %q: %w", name, err)
 		}
 
 		// Existing text in this domain, so a merge does not duplicate.

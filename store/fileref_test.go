@@ -159,7 +159,7 @@ func TestSetMemoryFileRefBumpsStableRev(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stable rev: %v", err)
 	}
-	if _, err := s.SetMemoryFileRef(ctx, db, m.ID, "files/voice.md"); err != nil {
+	if _, err = s.SetMemoryFileRef(ctx, db, m.ID, "files/voice.md"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	after, err := s.StableRev(ctx)
@@ -205,7 +205,7 @@ func TestMigrateAddsFileRefColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed legacy: %v", err)
 	}
-	if err := db.Close(); err != nil {
+	if err = db.Close(); err != nil {
 		t.Fatalf("close raw: %v", err)
 	}
 

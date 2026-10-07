@@ -81,7 +81,7 @@ func BuildPrompt(path string) (string, PromptResult) {
 	if path == "" {
 		return defaultPrompt, PromptResult{}
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: path is the host-configured prompt file; reading it is the purpose.
 	if err != nil {
 		return defaultPrompt, PromptResult{}
 	}

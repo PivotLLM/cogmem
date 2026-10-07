@@ -72,7 +72,7 @@ func TestListEventsIsOldestFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	var ids []string
+	ids := make([]string, 0, len(events))
 	for _, e := range events {
 		ids = append(ids, e.ID)
 	}

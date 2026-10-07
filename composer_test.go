@@ -360,7 +360,7 @@ func TestComposerDefaults(t *testing.T) {
 // With five topic domains and no options, exactly three load.
 func TestRoutedBlockDefaultTopK(t *testing.T) {
 	s := newStore(t)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		mustDomain(t, s, store.CreateDomainParams{Name: fmt.Sprintf("Topic %d", i)})
 	}
 	res, err := New(s).RoutedBlock(context.Background(), RouteRequest{})
@@ -464,7 +464,7 @@ func TestStableBlockStickyOrder(t *testing.T) {
 	if a < 0 || g < 0 || z < 0 {
 		t.Fatalf("a sticky domain is missing (a=%d g=%d z=%d):\n%s", a, g, z, txt)
 	}
-	if !(a < g && g < z) {
+	if a >= g || g >= z {
 		t.Fatalf("sticky domains out of name order (Alpha@%d General@%d Zulu@%d):\n%s", a, g, z, txt)
 	}
 }
@@ -639,7 +639,7 @@ func TestRoutedBlockLexicalIgnoresEvents(t *testing.T) {
 	s := newStore(t)
 	logs := mustDomain(t, s, store.CreateDomainParams{Name: "Logs", Summary: "trip log"})
 	facts := mustDomain(t, s, store.CreateDomainParams{Name: "Facts", Summary: "standing"})
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		mustMemory(t, s, store.AddMemoryParams{DomainID: logs.ID, Type: store.TypeEvent, Text: fmt.Sprintf("kestrel seen on day %d", i)})
 	}
 	mustMemory(t, s, store.AddMemoryParams{DomainID: facts.ID, Type: store.TypeFact, Text: "The kestrel is a small falcon."})
@@ -829,6 +829,43 @@ func TestSignalReason(t *testing.T) {
 	} {
 		if got := signalReason(signal); got != want {
 			t.Errorf("signalReason(%q) = %q, want %q", signal, got, want)
+		}
+	}
+}
+
+// An injected domain shows its state lists (blockers, next actions,
+// constraints) under their headings, in order, before its memories.
+func TestRenderDomainState(t *testing.T) {
+	d := store.Domain{
+		ID:      "d1",
+		Name:    "Launch",
+		Summary: "Ship the beta.\nSecond line is dropped.",
+		State: store.DomainState{
+			Blockers:    []string{"waiting on legal"},
+			NextActions: []string{"draft the notes", "book the room"},
+			Constraints: []string{"no weekend deploys"},
+		},
+	}
+	hooks := []store.Memory{{ID: "h1", Type: store.TypeRule, Text: "be brief"}}
+	got := renderDomain(d, hooks, 0, "keyword:launch")
+	want := "## Injected cogmem domain: Launch (d1) — loaded by keyword trigger \"launch\"\n" +
+		"Summary: Ship the beta.\n" +
+		"Blockers:\n- waiting on legal\n" +
+		"Next actions:\n- draft the notes\n- book the room\n" +
+		"Constraints:\n- no weekend deploys\n" +
+		"- (h1) (rule) be brief\n" +
+		"\n"
+	if got != want {
+		t.Fatalf("renderDomain =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Empty state lists produce no headings.
+func TestRenderDomainOmitsEmptyState(t *testing.T) {
+	got := renderDomain(store.Domain{ID: "d1", Name: "Launch"}, nil, 0, "recency")
+	for _, h := range []string{"Blockers:", "Next actions:", "Constraints:"} {
+		if strings.Contains(got, h) {
+			t.Errorf("rendered %q for empty state:\n%s", h, got)
 		}
 	}
 }

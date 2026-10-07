@@ -44,54 +44,105 @@ func TestValidateRejections(t *testing.T) {
 		out     Output
 		wantErr string
 	}{
-		{"evidence out of range", Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Type: "fact", Text: "ok", Evidence: ev(999, 999)}}},
-			"memory_ops[0]: evidence [999,999] outside batch [512,512]"},
-		{"evidence reversed", Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Type: "fact", Text: "ok", Evidence: ev(512, 511)}}},
-			"memory_ops[0]: evidence seq_start 512 > seq_end 511"},
-		{"unknown domain", Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "dX", Type: "fact", Text: "ok", Evidence: ev(512, 512)}}},
-			`memory_ops[0]: unknown domain "dX"`},
-		{"unknown retire id", Output{MemoryOps: []MemoryOp{{Op: "retire", ID: "hZ", Reason: "x", Evidence: ev(512, 512)}}},
-			`memory_ops[0]: retire unknown memory "hZ"`},
-		{"unknown supersede old_id", Output{MemoryOps: []MemoryOp{{Op: "supersede", OldID: "hZ", Domain: "d4", Type: "rule", Text: "ok", Evidence: ev(512, 512)}}},
-			`memory_ops[0]: supersede unknown old_id "hZ"`},
-		{"invalid kind", Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Type: "bogus", Text: "ok", Evidence: ev(512, 512)}}},
-			`memory_ops[0]: invalid type "bogus"`},
-		{"invalid memory op", Output{MemoryOps: []MemoryOp{{Op: "delete", ID: "h9", Evidence: ev(512, 512)}}},
-			`memory_ops[0]: invalid op "delete"`},
-		{"create no tmp_id", Output{DomainOps: []DomainOp{{Op: "create", Name: "X", Evidence: ev(512, 512)}}},
-			"domain_ops[0]: create needs a unique tmp_id"},
+		{
+			"evidence out of range",
+			Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Type: "fact", Text: "ok", Evidence: ev(999, 999)}}},
+			"memory_ops[0]: evidence [999,999] outside batch [512,512]",
+		},
+		{
+			"evidence reversed",
+			Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Type: "fact", Text: "ok", Evidence: ev(512, 511)}}},
+			"memory_ops[0]: evidence seq_start 512 > seq_end 511",
+		},
+		{
+			"unknown domain",
+			Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "dX", Type: "fact", Text: "ok", Evidence: ev(512, 512)}}},
+			`memory_ops[0]: unknown domain "dX"`,
+		},
+		{
+			"unknown retire id",
+			Output{MemoryOps: []MemoryOp{{Op: "retire", ID: "hZ", Reason: "x", Evidence: ev(512, 512)}}},
+			`memory_ops[0]: retire unknown memory "hZ"`,
+		},
+		{
+			"unknown supersede old_id",
+			Output{MemoryOps: []MemoryOp{{Op: "supersede", OldID: "hZ", Domain: "d4", Type: "rule", Text: "ok", Evidence: ev(512, 512)}}},
+			`memory_ops[0]: supersede unknown old_id "hZ"`,
+		},
+		{
+			"invalid kind",
+			Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Type: "bogus", Text: "ok", Evidence: ev(512, 512)}}},
+			`memory_ops[0]: invalid type "bogus"`,
+		},
+		{
+			"invalid memory op",
+			Output{MemoryOps: []MemoryOp{{Op: "delete", ID: "h9", Evidence: ev(512, 512)}}},
+			`memory_ops[0]: invalid op "delete"`,
+		},
+		{
+			"create no tmp_id",
+			Output{DomainOps: []DomainOp{{Op: "create", Name: "X", Evidence: ev(512, 512)}}},
+			"domain_ops[0]: create needs a unique tmp_id",
+		},
 		{"create duplicate tmp_id", Output{DomainOps: []DomainOp{
 			{Op: "create", TmpID: "t1", Name: "X", Evidence: ev(512, 512)},
 			{Op: "create", TmpID: "t1", Name: "Y", Evidence: ev(512, 512)},
 		}}, "domain_ops[1]: create needs a unique tmp_id"},
-		{"create no name", Output{DomainOps: []DomainOp{{Op: "create", TmpID: "t1", Name: "  ", Evidence: ev(512, 512)}}},
-			"domain_ops[0]: create needs a name"},
-		{"update unknown domain", Output{DomainOps: []DomainOp{{Op: "update", ID: "dX", Summary: "s", Evidence: ev(512, 512)}}},
-			`domain_ops[0]: update unknown domain "dX"`},
-		{"archive unknown domain", Output{DomainOps: []DomainOp{{Op: "archive", ID: "dX", Evidence: ev(512, 512)}}},
-			`domain_ops[0]: archive unknown domain "dX"`},
-		{"invalid domain op", Output{DomainOps: []DomainOp{{Op: "delete", ID: "d4", Evidence: ev(512, 512)}}},
-			`domain_ops[0]: invalid op "delete"`},
-		{"triggers too long", Output{DomainOps: []DomainOp{{Op: "update", ID: "d4", Triggers: strings.Repeat("x", maxTriggersLen+1), Evidence: ev(512, 512)}}},
-			"domain_ops[0]: triggers too long (513 > 512)"},
-		{"keyword triggers too long", Output{DomainOps: []DomainOp{{Op: "update", ID: "d4", KeywordTriggers: strings.Repeat("x", maxTriggersLen+1), Evidence: ev(512, 512)}}},
-			"domain_ops[0]: keyword_triggers too long (513 > 512)"},
+		{
+			"create no name",
+			Output{DomainOps: []DomainOp{{Op: "create", TmpID: "t1", Name: "  ", Evidence: ev(512, 512)}}},
+			"domain_ops[0]: create needs a name",
+		},
+		{
+			"update unknown domain",
+			Output{DomainOps: []DomainOp{{Op: "update", ID: "dX", Summary: "s", Evidence: ev(512, 512)}}},
+			`domain_ops[0]: update unknown domain "dX"`,
+		},
+		{
+			"archive unknown domain",
+			Output{DomainOps: []DomainOp{{Op: "archive", ID: "dX", Evidence: ev(512, 512)}}},
+			`domain_ops[0]: archive unknown domain "dX"`,
+		},
+		{
+			"invalid domain op",
+			Output{DomainOps: []DomainOp{{Op: "delete", ID: "d4", Evidence: ev(512, 512)}}},
+			`domain_ops[0]: invalid op "delete"`,
+		},
+		{
+			"triggers too long",
+			Output{DomainOps: []DomainOp{{Op: "update", ID: "d4", Triggers: strings.Repeat("x", maxTriggersLen+1), Evidence: ev(512, 512)}}},
+			"domain_ops[0]: triggers too long (513 > 512)",
+		},
+		{
+			"keyword triggers too long",
+			Output{DomainOps: []DomainOp{{Op: "update", ID: "d4", KeywordTriggers: strings.Repeat("x", maxTriggersLen+1), Evidence: ev(512, 512)}}},
+			"domain_ops[0]: keyword_triggers too long (513 > 512)",
+		},
 		// Type is REQUIRED, not merely valid-if-present. The old contract
 		// checked each field only when it was non-empty, so an op that named no
 		// type and no status and no source passed every guard and was then
 		// filled in with defaults — assistant_inferred + active, the one
 		// combination the rules forbade.
-		{"missing type", Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Text: "ok", Evidence: ev(512, 512)}}},
-			"memory_ops[0]: missing type"},
-		{"empty text", Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Type: "fact", Text: " ", Evidence: ev(512, 512)}}},
-			"memory_ops[0]: empty text"},
+		{
+			"missing type",
+			Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Text: "ok", Evidence: ev(512, 512)}}},
+			"memory_ops[0]: missing type",
+		},
+		{
+			"empty text",
+			Output{MemoryOps: []MemoryOp{{Op: "add", Domain: "d4", Type: "fact", Text: " ", Evidence: ev(512, 512)}}},
+			"memory_ops[0]: empty text",
+		},
 		// review was a memory status and never a domain one; the domain
 		// lifecycle is active/archived.
 		{"domain status review", Output{DomainOps: []DomainOp{{
 			Op: "create", TmpID: "t1", Name: "X", Status: "review", Evidence: ev(512, 512),
 		}}}, `domain_ops[0]: invalid status "review"`},
-		{"ledger evidence out of range", Output{ConflictLedger: []LedgerEntry{{Resolved: "x", Reason: "y", Evidence: ev(999, 999)}}},
-			"conflict_ledger[0]: evidence [999,999] outside batch [512,512]"},
+		{
+			"ledger evidence out of range",
+			Output{ConflictLedger: []LedgerEntry{{Resolved: "x", Reason: "y", Evidence: ev(999, 999)}}},
+			"conflict_ledger[0]: evidence [999,999] outside batch [512,512]",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -575,10 +575,10 @@ func renderDomain(d store.Domain, hooks []store.Memory, events int, signal strin
 	return b.String()
 }
 
-func filterConfidence(hooks []store.Memory, min float64) []store.Memory {
+func filterConfidence(hooks []store.Memory, minConfidence float64) []store.Memory {
 	out := hooks[:0:0]
 	for _, h := range hooks {
-		if h.Confidence >= min {
+		if h.Confidence >= minConfidence {
 			out = append(out, h)
 		}
 	}

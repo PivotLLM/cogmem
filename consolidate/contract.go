@@ -84,6 +84,8 @@ type Message struct {
 }
 
 // Output is the strict JSON the model must return.
+//
+//nolint:recvcheck // Validate is a read-only check on a value; Normalize must mutate in place. Either receiver change alters the exported method set.
 type Output struct {
 	DomainOps      []DomainOp    `json:"domain_ops"`
 	MemoryOps      []MemoryOp    `json:"memory_ops"`

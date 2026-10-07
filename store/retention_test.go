@@ -85,7 +85,7 @@ func TestPurgeExpiredEventsInvalidatesTheStableBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stable rev: %v", err)
 	}
-	if _, err := s.PurgeExpiredEvents(ctx, s.DB(), 30); err != nil {
+	if _, err = s.PurgeExpiredEvents(ctx, s.DB(), 30); err != nil {
 		t.Fatalf("purge: %v", err)
 	}
 	after, err := s.StableRev(ctx)

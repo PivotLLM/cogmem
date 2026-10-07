@@ -27,6 +27,7 @@ var curatedFiles = []struct {
 func ReadCurated(workspace string) Curated {
 	var c Curated
 	for _, f := range curatedFiles {
+		//nolint:gosec // G304: reading the host's workspace files is this function's purpose; relPath is a fixed constant.
 		if b, err := os.ReadFile(filepath.Join(workspace, f.relPath)); err == nil {
 			f.set(&c, string(b))
 		}

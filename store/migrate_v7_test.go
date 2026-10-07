@@ -97,7 +97,7 @@ func TestInbox_RoundTrip(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	ctx := context.Background()
 	for seq, text := range map[int64]string{3: "three", 1: "one", 2: "two"} {
-		if err := s.AppendInbox(ctx, s.DB(), seq, "user", text); err != nil {
+		if err = s.AppendInbox(ctx, s.DB(), seq, "user", text); err != nil {
 			t.Fatal(err)
 		}
 	}

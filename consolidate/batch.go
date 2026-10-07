@@ -54,10 +54,7 @@ func TruncateText(s string, maxChars int) (string, bool) {
 // single message.
 func SelectBatch(msgs []Message, opt BatchOptions) (batch []Message, lastSeq int64, more bool) {
 	opt = opt.withDefaults()
-	budget := opt.MaxInputTokens - opt.OverheadTokens
-	if budget < 0 {
-		budget = 0
-	}
+	budget := max(opt.MaxInputTokens-opt.OverheadTokens, 0)
 	for i := range msgs {
 		if len(batch) >= opt.MaxMessages {
 			more = true

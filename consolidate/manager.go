@@ -439,7 +439,7 @@ func (m *Manager) nextNightly(from time.Time) time.Time {
 		candidate = candidate.AddDate(0, 0, 1)
 	}
 	if m.opt.nightlyJitter > 0 {
-		candidate = candidate.Add(time.Duration(rand.Int63n(int64(m.opt.nightlyJitter))))
+		candidate = candidate.Add(time.Duration(rand.Int63n(int64(m.opt.nightlyJitter)))) //nolint:gosec // G404: scheduling jitter, not a secret.
 	}
 	return candidate
 }

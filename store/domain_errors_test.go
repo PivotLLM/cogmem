@@ -15,7 +15,7 @@ func TestDomainMutatorsUnknownID(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	db := s.DB()
-	real, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Real"})
+	realDomain, _ := s.CreateDomain(ctx, db, CreateDomainParams{Name: "Real"})
 	before, _ := s.StableRev(ctx)
 
 	if err := s.ArchiveDomain(ctx, db, "dZZZZZ"); !errors.Is(err, ErrNotFound) {
@@ -24,13 +24,13 @@ func TestDomainMutatorsUnknownID(t *testing.T) {
 	if err := s.DeleteDomain(ctx, db, "dZZZZZ"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("delete unknown: %v, want ErrNotFound", err)
 	}
-	if _, err := s.MigrateDomain(ctx, db, "dZZZZZ", real.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := s.MigrateDomain(ctx, db, "dZZZZZ", realDomain.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("migrate from unknown: %v, want ErrNotFound", err)
 	}
-	if _, err := s.MigrateDomain(ctx, db, real.ID, "dZZZZZ"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.MigrateDomain(ctx, db, realDomain.ID, "dZZZZZ"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("migrate to unknown: %v, want ErrNotFound", err)
 	}
-	if _, err := s.MigrateDomain(ctx, db, real.ID, real.ID); err == nil || err.Error() != "cogmem: from and to domains are the same" {
+	if _, err := s.MigrateDomain(ctx, db, realDomain.ID, realDomain.ID); err == nil || err.Error() != "cogmem: from and to domains are the same" {
 		t.Errorf("migrate onto itself: %v", err)
 	}
 	if err := s.UpdateDomain(ctx, db, "dZZZZZ", UpdateDomainParams{Summary: strptr("x")}); !errors.Is(err, ErrNotFound) {
@@ -45,7 +45,7 @@ func TestDomainMutatorsUnknownID(t *testing.T) {
 	if after, _ := s.StableRev(ctx); after != before {
 		t.Errorf("stable_rev %d -> %d across failed mutations, want unchanged", before, after)
 	}
-	if d, _ := s.GetDomain(ctx, db, real.ID, false); d.Version != 1 || d.Status != StatusActive {
+	if d, _ := s.GetDomain(ctx, db, realDomain.ID, false); d.Version != 1 || d.Status != StatusActive {
 		t.Errorf("the real domain was touched: %+v", d)
 	}
 }

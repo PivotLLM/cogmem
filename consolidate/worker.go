@@ -462,7 +462,7 @@ func (w *Worker) dump(p RunParams, system, userJSON, raw string, applied int) {
 	if w.debugDump == "" {
 		return
 	}
-	if err := os.MkdirAll(w.debugDump, 0o755); err != nil {
+	if err := os.MkdirAll(w.debugDump, 0o755); err != nil { //nolint:gosec // G301: existing permissions kept; tightening is a separate decision.
 		return
 	}
 	rec := struct {
@@ -476,7 +476,7 @@ func (w *Worker) dump(p RunParams, system, userJSON, raw string, applied int) {
 		return
 	}
 	name := fmt.Sprintf("%s-%s.json", time.Now().UTC().Format("20060102T150405.000"), uuid.NewString()[:8])
-	_ = os.WriteFile(filepath.Join(w.debugDump, name), b, 0o644)
+	_ = os.WriteFile(filepath.Join(w.debugDump, name), b, 0o644) //nolint:gosec // G306: existing permissions kept; tightening is a separate decision.
 }
 
 func (w *Worker) leaseOwner(label string) string {
