@@ -5,8 +5,6 @@ package cogmem
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -62,6 +60,9 @@ type SessionOptions struct {
 	// observe or recall. Hosts use it for one-time work such as backfilling
 	// the inbox from an older record of the conversation.
 	OnOpen func(ctx context.Context, st *store.Store)
+	// StoreOptions are passed to store.Open, e.g. store.WithFilePermissions
+	// and store.WithFolderPermissions. Nil uses the store defaults.
+	StoreOptions []store.Option
 }
 
 // Session is one agent session's view of cognitive memory: the host hands it a
@@ -102,15 +103,9 @@ func (s *Session) Store() *store.Store {
 		return s.st
 	}
 	s.opened = true
-	// cogmem owns Dir; create it so a brand-new memory does not fail its first
-	// write.
-	if err := os.MkdirAll(filepath.Dir(s.dbPath), 0o755); err != nil { //nolint:gosec // G301: existing permissions kept; tightening is a separate decision.
-		logger.WarnCF("cogmem", "create session store directory failed", map[string]any{
-			"id": s.opt.ID, "path": s.dbPath, "error": err.Error(),
-		})
-		return nil
-	}
-	st, err := store.Open(s.dbPath)
+	// cogmem owns Dir; Open creates it so a brand-new memory does not fail its
+	// first write.
+	st, err := store.Open(s.dbPath, s.opt.StoreOptions...)
 	if err != nil {
 		logger.WarnCF("cogmem", "open session store failed", map[string]any{
 			"id":    s.opt.ID,

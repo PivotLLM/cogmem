@@ -36,15 +36,15 @@ func (r MigrationResult) Migrated() bool { return r.Err == nil && r.To > r.From 
 // schema indefinitely. Doing it at load makes the upgrade a single observable
 // event, and surfaces a database that cannot be migrated at startup rather
 // than mid-conversation. A missing store is not an error: there is nothing to
-// migrate, and the result reports From and To as 0.
-func Migrate(dir string) MigrationResult {
+// migrate, and the result reports From and To as 0. opts are passed to Open.
+func Migrate(dir string, opts ...Option) MigrationResult {
 	path := DBPath(dir)
 	res := MigrationResult{Path: path}
 	if _, err := os.Stat(path); err != nil {
 		return res
 	}
 	res.From = peekVersion(path)
-	s, err := Open(path)
+	s, err := Open(path, opts...)
 	if err != nil {
 		res.Err = err
 		return res

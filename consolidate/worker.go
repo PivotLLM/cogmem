@@ -89,6 +89,8 @@ type Worker struct {
 	autoPromote    bool
 	debugDump      string
 	modelName      string
+	folderMode     os.FileMode
+	fileMode       os.FileMode
 
 	// Retention windows in days; 0 means keep forever. Applied on each run,
 	// because consolidation is already the regular sweep over a store and a
@@ -123,12 +125,39 @@ func WithRetention(eventDays, retiredDays int) Option {
 // carries none.
 func WithModelName(name string) Option { return func(w *Worker) { w.modelName = name } }
 
-// NewWorker builds a Worker over a store and a model caller.
+// WithFolderPermissions sets the mode for the debug dump directory when it is
+// created (default: the store's folder mode). Zero is ignored.
+func WithFolderPermissions(m os.FileMode) Option {
+	return func(w *Worker) {
+		if m != 0 {
+			w.folderMode = m
+		}
+	}
+}
+
+// WithFilePermissions sets the mode for debug dump files (default: the
+// store's file mode). Zero is ignored.
+func WithFilePermissions(m os.FileMode) Option {
+	return func(w *Worker) {
+		if m != 0 {
+			w.fileMode = m
+		}
+	}
+}
+
+// NewWorker builds a Worker over a store and a model caller. The debug dump
+// modes default to the store's; WithFolderPermissions and WithFilePermissions
+// override them.
 func NewWorker(st *store.Store, model ModelCaller, opts ...Option) *Worker {
 	w := &Worker{
-		st:        st,
-		model:     model,
-		batchOpts: DefaultBatchOptions(),
+		st:         st,
+		model:      model,
+		batchOpts:  DefaultBatchOptions(),
+		folderMode: store.DefaultFolderPermissions,
+		fileMode:   store.DefaultFilePermissions,
+	}
+	if st != nil {
+		w.folderMode, w.fileMode = st.FolderPermissions(), st.FilePermissions()
 	}
 	for _, o := range opts {
 		o(w)
@@ -462,7 +491,7 @@ func (w *Worker) dump(p RunParams, system, userJSON, raw string, applied int) {
 	if w.debugDump == "" {
 		return
 	}
-	if err := os.MkdirAll(w.debugDump, 0o755); err != nil { //nolint:gosec // G301: existing permissions kept; tightening is a separate decision.
+	if err := os.MkdirAll(w.debugDump, w.folderMode); err != nil {
 		return
 	}
 	rec := struct {
@@ -476,7 +505,7 @@ func (w *Worker) dump(p RunParams, system, userJSON, raw string, applied int) {
 		return
 	}
 	name := fmt.Sprintf("%s-%s.json", time.Now().UTC().Format("20060102T150405.000"), uuid.NewString()[:8])
-	_ = os.WriteFile(filepath.Join(w.debugDump, name), b, 0o644) //nolint:gosec // G306: existing permissions kept; tightening is a separate decision.
+	_ = os.WriteFile(filepath.Join(w.debugDump, name), b, w.fileMode)
 }
 
 func (w *Worker) leaseOwner(label string) string {

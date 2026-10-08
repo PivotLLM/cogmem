@@ -18,6 +18,8 @@ import (
 	"errors"
 
 	"github.com/PivotLLM/toolspec"
+
+	"github.com/PivotLLM/cogmem/store"
 )
 
 // Host is what a tool needs from the application embedding cognitive memory.
@@ -37,6 +39,10 @@ type Host struct {
 	// Consolidate asks the host's background worker to run for a session now.
 	// Nil means the tool reports that no worker is available.
 	Consolidate func(agentID, sessionKey string)
+	// StoreOptions are passed to store.Open, e.g. store.WithFilePermissions
+	// and store.WithFolderPermissions. The export tool uses the same modes.
+	// Nil uses the store defaults.
+	StoreOptions []store.Option
 }
 
 func (h Host) checkAttachment(ref string) (int64, error) {
@@ -56,7 +62,7 @@ func Definitions(h Host) []toolspec.ToolDefinition {
 			Category:      "memory",
 			SessionScoped: true,
 			DefaultAllow:  toolspec.Allow(allow),
-			Handler:       wrap(h.Dir, hf),
+			Handler:       wrap(h.Dir, h.StoreOptions, hf),
 		}
 	}
 

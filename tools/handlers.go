@@ -33,19 +33,16 @@ func fileSuffix(ref string) string {
 // lifecycle and turns errors into error Results.
 type handlerFunc func(s *store.Store, call *toolspec.ToolCall) (string, error)
 
-// wrap builds a toolspec.ToolHandler that opens the store in dir (creating the
-// directory if needed), runs h, and closes the store. An empty dir means the
-// host has no memory for this agent, and yields an error Result.
-func wrap(dir string, h handlerFunc) toolspec.ToolHandler {
+// wrap builds a toolspec.ToolHandler that opens the store in dir with opts
+// (store.Open creates the directory if needed), runs h, and closes the store.
+// An empty dir means the host has no memory for this agent, and yields an
+// error Result.
+func wrap(dir string, opts []store.Option, h handlerFunc) toolspec.ToolHandler {
 	return func(call *toolspec.ToolCall) (*toolspec.Result, error) {
 		if dir == "" {
 			return errResult("cognitive memory is unavailable (no memory directory configured)", nil), nil
 		}
-		dbPath := store.DBPath(dir)
-		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: existing permissions kept; tightening is a separate decision.
-			return errResult("failed to prepare memory store directory", err), nil
-		}
-		s, err := store.Open(dbPath)
+		s, err := store.Open(store.DBPath(dir), opts...)
 		if err != nil {
 			return errResult("failed to open memory store", err), nil
 		}
@@ -547,11 +544,12 @@ func exportMemory(s *store.Store, call *toolspec.ToolCall, workspace string) (st
 	}
 	// Write into the agent's read/write files/ directory.
 	outDir := filepath.Join(workspace, "files")
-	if err := os.MkdirAll(outDir, 0o755); err != nil { //nolint:gosec // G301: existing permissions kept; tightening is a separate decision.
+	// The store carries the host's configured modes (or the defaults).
+	if err := os.MkdirAll(outDir, s.FolderPermissions()); err != nil {
 		return "", fmt.Errorf("failed to prepare export directory: %w", err)
 	}
 	outPath := filepath.Join(outDir, exportFilename)
-	if err := os.WriteFile(outPath, []byte(doc), 0o644); err != nil { //nolint:gosec // G306: existing permissions kept; tightening is a separate decision.
+	if err := os.WriteFile(outPath, []byte(doc), s.FilePermissions()); err != nil {
 		return "", fmt.Errorf("failed to write export: %w", err)
 	}
 	return fmt.Sprintf("Exported %d domain(s) and %d memory(ies) to files/%s.",

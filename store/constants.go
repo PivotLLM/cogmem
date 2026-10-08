@@ -3,7 +3,18 @@
 
 package store
 
-import "time"
+import (
+	"os"
+	"time"
+)
+
+// File-system permission defaults: cogmem's directory, database and snapshots
+// hold the agent's memory, so only the owner may read them. Overridable via
+// WithFolderPermissions and WithFilePermissions.
+const (
+	DefaultFolderPermissions os.FileMode = 0o700
+	DefaultFilePermissions   os.FileMode = 0o600
+)
 
 // Identifier format (DEC-2, revised): a one-character type prefix plus
 // idRandomLen Crockford base32 characters, 6 characters total (e.g. "dK3M9P",
