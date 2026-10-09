@@ -30,8 +30,10 @@ type DBTX interface {
 
 // Store owns one .cogmem.db.
 type Store struct {
-	db   *sql.DB
-	path string
+	db         *sql.DB
+	path       string
+	folderMode os.FileMode
+	fileMode   os.FileMode
 }
 
 // Option configures Open (functional options pattern, per dev standards).
@@ -39,6 +41,21 @@ type Option func(*openConfig)
 
 type openConfig struct {
 	busyTimeout time.Duration
+	folderMode  os.FileMode
+	fileMode    os.FileMode
+}
+
+// newOpenConfig applies opts over the defaults.
+func newOpenConfig(opts []Option) openConfig {
+	cfg := openConfig{
+		busyTimeout: defaultBusyTimeout,
+		folderMode:  DefaultFolderPermissions,
+		fileMode:    DefaultFilePermissions,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return cfg
 }
 
 // WithBusyTimeout overrides the SQLite busy_timeout (default defaultBusyTimeout).
@@ -50,12 +67,36 @@ func WithBusyTimeout(d time.Duration) Option {
 	}
 }
 
+// WithFolderPermissions sets the mode for directories cogmem creates (default
+// DefaultFolderPermissions). An existing directory keeps its mode. Zero is
+// ignored.
+func WithFolderPermissions(m os.FileMode) Option {
+	return func(c *openConfig) {
+		if m != 0 {
+			c.folderMode = m
+		}
+	}
+}
+
+// WithFilePermissions sets the mode for the database, its -wal and -shm files
+// and its snapshots (default DefaultFilePermissions). Open repairs any of these
+// that has another mode. Zero is ignored.
+func WithFilePermissions(m os.FileMode) Option {
+	return func(c *openConfig) {
+		if m != 0 {
+			c.fileMode = m
+		}
+	}
+}
+
 // Open opens (or creates) a cogmem database at path with WAL mode and runs
-// migrations. Pure Go (modernc.org/sqlite), no CGO.
+// migrations. Pure Go (modernc.org/sqlite), no CGO. A missing parent directory
+// is created with the folder mode; the database, its -wal and -shm files and
+// its pre-migration snapshots are given the file mode.
 func Open(path string, opts ...Option) (*Store, error) {
-	cfg := openConfig{busyTimeout: defaultBusyTimeout}
-	for _, o := range opts {
-		o(&cfg)
+	cfg := newOpenConfig(opts)
+	if err := prepareFiles(path, cfg.folderMode, cfg.fileMode); err != nil {
+		return nil, fmt.Errorf("cogmem: open %s: %w", path, err)
 	}
 	// The pragmas travel in the DSN so the driver applies them to EVERY
 	// connection database/sql opens, not only the first: a pooled connection
@@ -70,7 +111,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cogmem: open %s: %w", path, err)
 	}
-	s := &Store{db: db, path: path}
+	s := &Store{db: db, path: path, folderMode: cfg.folderMode, fileMode: cfg.fileMode}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -84,6 +125,13 @@ func (s *Store) DB() *sql.DB { return s.db }
 
 // Path returns the database file path.
 func (s *Store) Path() string { return s.path }
+
+// FolderPermissions returns the mode for directories created on the store's
+// behalf.
+func (s *Store) FolderPermissions() os.FileMode { return s.folderMode }
+
+// FilePermissions returns the mode for files created on the store's behalf.
+func (s *Store) FilePermissions() os.FileMode { return s.fileMode }
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
@@ -199,7 +247,8 @@ var snapshotName = regexp.MustCompile(`\.pre-v\d+\.db$`)
 // (opening one for recovery must not nest a <snap>.pre-vN.db beside it), and
 // when the snapshot already exists (VACUUM INTO refuses to overwrite, which is
 // the behaviour we want: the first snapshot at a given version is the one taken
-// before any changes).
+// before any changes). A zero-length file there is not a snapshot and is
+// replaced.
 func (s *Store) snapshotBeforeMigration(ctx context.Context, from int) error {
 	if snapshotName.MatchString(s.path) {
 		return nil
@@ -209,13 +258,17 @@ func (s *Store) snapshotBeforeMigration(ctx context.Context, from int) error {
 		return err
 	}
 	dst := fmt.Sprintf("%s.pre-v%d.db", s.path, from)
-	if _, err := os.Stat(dst); err == nil {
-		return nil // already snapshotted at this version
+	if fi, err := os.Stat(dst); err == nil {
+		if fi.Size() > 0 {
+			return nil // already snapshotted at this version
+		}
+		// Zero-length: vacuumInto's placeholder, left by a crash before the
+		// copy was written. It holds nothing, so take the snapshot again.
+		if err := os.Remove(dst); err != nil {
+			return fmt.Errorf("remove empty snapshot %s: %w", dst, err)
+		}
 	}
-	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, dst); err != nil {
-		return fmt.Errorf("VACUUM INTO %s: %w", dst, err)
-	}
-	return nil
+	return vacuumInto(ctx, s.db, dst, s.fileMode)
 }
 
 // retireReviewStatus promotes every memory left in the removed "review" status
@@ -439,15 +492,18 @@ func (s *Store) Vacuum(ctx context.Context) error {
 // dstPath using SQLite "VACUUM INTO" (captures committed WAL data, no partial
 // pages). dstPath must not already exist. Used to give a spawned sub-agent its
 // own private copy of the primary's memory, deleted when the sub-agent finishes.
-func Snapshot(ctx context.Context, srcPath, dstPath string) error {
+// dstPath gets the file mode from opts (WithFilePermissions); other options
+// have no effect here.
+func Snapshot(ctx context.Context, srcPath, dstPath string, opts ...Option) error {
+	cfg := newOpenConfig(opts)
 	_ = os.Remove(dstPath) // VACUUM INTO requires the target not exist
 	db, err := sql.Open("sqlite", "file:"+srcPath+"?mode=ro")
 	if err != nil {
 		return fmt.Errorf("cogmem snapshot: open source: %w", err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", dstPath); err != nil {
-		return fmt.Errorf("cogmem snapshot: vacuum into %s: %w", dstPath, err)
+	if err := vacuumInto(ctx, db, dstPath, cfg.fileMode); err != nil {
+		return fmt.Errorf("cogmem snapshot: %w", err)
 	}
 	return nil
 }
