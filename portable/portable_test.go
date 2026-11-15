@@ -38,6 +38,7 @@ func seed(t *testing.T, s *store.Store) {
 	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{
 		Name: "Craft", Summary: "how to write",
 		Triggers: "file_write", KeywordTriggers: "style guide",
+		AutoKeywords: "house style,oxford comma", BlockedKeywords: "word count",
 		State: store.DomainState{
 			Blockers:    []string{"waiting on the brief"},
 			NextActions: []string{"draft chapter 2", "send outline"},
@@ -236,6 +237,7 @@ func TestExportCarriesDomainFields(t *testing.T) {
 	wantCraft := Domain{
 		Name: "Craft", Status: "active", Summary: "how to write",
 		Triggers: "file_write", KeywordTriggers: "style guide",
+		AutoKeywords: "house style,oxford comma", BlockedKeywords: "word count",
 		Blockers:    []string{"waiting on the brief"},
 		NextActions: []string{"draft chapter 2", "send outline"},
 		Constraints: []string{"no more than 2000 words"},
@@ -514,6 +516,7 @@ func TestMergeAppliesDocumentDomainFields(t *testing.T) {
 			Name:   "craft", // matched case-insensitively
 			Sticky: true, Status: "active", Summary: "from the document",
 			Triggers: "file_write", KeywordTriggers: "style guide",
+			AutoKeywords: "House Style", BlockedKeywords: "word count",
 			Blockers:    []string{"document blocker"},
 			NextActions: []string{"document action"},
 			Constraints: []string{"document constraint"},
@@ -532,9 +535,10 @@ func TestMergeAppliesDocumentDomainFields(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 	if got.Name != "Craft" || got.Summary != "from the document" || !got.Sticky() || got.Status != store.StatusActive ||
-		got.Triggers != "file_write" || got.KeywordTriggers != "style guide" {
-		t.Errorf("domain after merge: name=%q summary=%q sticky=%v status=%q triggers=%q keywords=%q",
-			got.Name, got.Summary, got.Sticky(), got.Status, got.Triggers, got.KeywordTriggers)
+		got.Triggers != "file_write" || got.KeywordTriggers != "style guide" ||
+		got.AutoKeywords != "house style" || got.BlockedKeywords != "word count" {
+		t.Errorf("domain after merge: name=%q summary=%q sticky=%v status=%q triggers=%q keywords=%q auto=%q blocked=%q",
+			got.Name, got.Summary, got.Sticky(), got.Status, got.Triggers, got.KeywordTriggers, got.AutoKeywords, got.BlockedKeywords)
 	}
 	wantState := store.DomainState{
 		Blockers: []string{"document blocker"}, NextActions: []string{"document action"}, Constraints: []string{"document constraint"},

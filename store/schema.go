@@ -4,8 +4,9 @@
 package store
 
 // schemaVersion is the current migration version. Bump when DDL changes, and
-// add the corresponding step to migrateFrom in store.go — the recorded version
-// drives which steps run, so a bump without a step silently does nothing.
+// add the corresponding idempotent step to migrate in store.go. The steps probe
+// the database rather than trusting the recorded version, so a bump without a
+// step silently does nothing.
 //
 // 6: dropped memories.source and memories.priority, and retired the "review"
 //
@@ -18,7 +19,11 @@ package store
 // 8: dropped domains.agent_id and domains.session_key. A store is one memory
 // for one agent, in a directory the host owns, so neither column said anything
 // the store's location did not.
-const schemaVersion = 8
+//
+// 9: added domains.auto_keywords (keyword triggers maintained by consolidation)
+// and domains.blocked_keywords (phrases the agent removed from that list), as
+// additive columns in ensureDomainColumns. Stored keywords are not touched.
+const schemaVersion = 9
 
 // schema is the full DDL for a .cogmem.db. All statements are idempotent so
 // migrate() can run it on every open. No FTS, no vector columns.

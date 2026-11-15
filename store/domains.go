@@ -47,7 +47,9 @@ type CreateDomainParams struct {
 	Summary         string
 	State           DomainState
 	Triggers        string // comma-delimited tool-name substrings (optional)
-	KeywordTriggers string // comma-delimited message-text phrases (optional)
+	KeywordTriggers string // comma-delimited message-text phrases owned by the agent/operator (optional)
+	AutoKeywords    string // comma-delimited message-text phrases owned by consolidation (optional)
+	BlockedKeywords string // comma-delimited phrases consolidation may not add back (optional)
 }
 
 // CreateDomain inserts a new domain, assigns a short id, and bumps stable_rev
@@ -75,10 +77,12 @@ func (s *Store) CreateDomain(ctx context.Context, q DBTX, p CreateDomainParams) 
 	_, err = q.ExecContext(ctx, `
 		INSERT INTO domains(id, type, name, status, version,
 		                    summary, state_json, schema_name, schema_version,
-		                    last_active_at, triggers, keyword_triggers, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		                    last_active_at, triggers, keyword_triggers, auto_keywords, blocked_keywords,
+		                    created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, stickyValue(p.Sticky), p.Name, string(p.Status), 1,
-		p.Summary, string(stateJSON), "domain", 1, ts, normalizeTriggers(p.Triggers), normalizeKeywords(p.KeywordTriggers), ts, ts)
+		p.Summary, string(stateJSON), "domain", 1, ts, normalizeTriggers(p.Triggers),
+		normalizeKeywords(p.KeywordTriggers), normalizeKeywords(p.AutoKeywords), normalizeKeywords(p.BlockedKeywords), ts, ts)
 	if err != nil {
 		return Domain{}, fmt.Errorf("cogmem: create domain: %w", err)
 	}
@@ -97,7 +101,9 @@ type UpdateDomainParams struct {
 	State           *DomainState
 	Status          *Status
 	Triggers        *string // when non-nil, replaces the comma-delimited trigger list
-	KeywordTriggers *string // when non-nil, replaces the comma-delimited keyword-trigger list
+	KeywordTriggers *string // when non-nil, replaces the agent/operator-owned keyword-trigger list
+	AutoKeywords    *string // when non-nil, replaces the consolidation-owned keyword list
+	BlockedKeywords *string // when non-nil, replaces the phrases consolidation may not add back
 	Sticky          *bool   // when non-nil, sets/clears sticky (always-in-prompt)
 }
 
@@ -150,6 +156,14 @@ func (s *Store) UpdateDomain(ctx context.Context, q DBTX, id string, p UpdateDom
 	if p.KeywordTriggers != nil {
 		keywordTriggers = normalizeKeywords(*p.KeywordTriggers)
 	}
+	autoKeywords := cur.AutoKeywords
+	if p.AutoKeywords != nil {
+		autoKeywords = normalizeKeywords(*p.AutoKeywords)
+	}
+	blockedKeywords := cur.BlockedKeywords
+	if p.BlockedKeywords != nil {
+		blockedKeywords = normalizeKeywords(*p.BlockedKeywords)
+	}
 	stickyCol := stickyValue(cur.Sticky())
 	if p.Sticky != nil {
 		stickyCol = stickyValue(*p.Sticky)
@@ -159,16 +173,23 @@ func (s *Store) UpdateDomain(ctx context.Context, q DBTX, id string, p UpdateDom
 		return err
 	}
 	res, err := q.ExecContext(ctx, `
-		UPDATE domains SET name=?, summary=?, state_json=?, status=?, archived_at=?, triggers=?, keyword_triggers=?, type=?, version=version+1, updated_at=?
+		UPDATE domains SET name=?, summary=?, state_json=?, status=?, archived_at=?, triggers=?,
+		       keyword_triggers=?, auto_keywords=?, blocked_keywords=?, type=?, version=version+1, updated_at=?
 		WHERE id=?`,
-		name, summary, string(stateJSON), string(status), archivedAt, triggers, keywordTriggers, stickyCol, now(), id)
+		name, summary, string(stateJSON), string(status), archivedAt, triggers,
+		keywordTriggers, autoKeywords, blockedKeywords, stickyCol, now(), id)
 	if err != nil {
 		return fmt.Errorf("cogmem: update domain: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	_ = s.Touch(ctx, q, id)
+	// Consolidation refreshing its own keyword list is bookkeeping, not use of
+	// the domain: it does this for domains the conversation never mentioned,
+	// and marking them all active would flatten the recency order.
+	if p.AutoKeywords == nil || p != (UpdateDomainParams{AutoKeywords: p.AutoKeywords}) {
+		_ = s.Touch(ctx, q, id)
+	}
 	// Stable block changes if a sticky domain changed, or name/summary/status/
 	// sticky changed (index + always-in-prompt visibility).
 	if cur.Sticky() || p.Sticky != nil || p.Name != nil || p.Summary != nil || p.Status != nil {
@@ -324,7 +345,7 @@ func (s *Store) ListDomains(ctx context.Context, q DBTX, statuses ...Status) ([]
 const domainSelect = `
 	SELECT id, type, name, status, version, summary,
 	       state_json, schema_name, schema_version, last_active_at, triggers,
-	       keyword_triggers, created_at, updated_at, archived_at
+	       keyword_triggers, auto_keywords, blocked_keywords, created_at, updated_at, archived_at
 	FROM domains`
 
 type scanner interface {
@@ -384,41 +405,64 @@ func (d Domain) MatchTrigger(toolName string) (string, bool) {
 }
 
 // normalizeKeywords canonicalizes a comma-delimited keyword-trigger list: trims
-// and lowercases each phrase, drops empties, rejoins with single commas. Unlike
-// tool triggers these are matched against free-form message text, so '*' and
-// underscores are NOT special — a phrase may contain spaces (e.g. "morning
-// routine") and is matched whole.
+// and lowercases each phrase, drops empties and duplicates, rejoins with single
+// commas. Unlike tool triggers these are matched against free-form message
+// text, so '*' and underscores are NOT special — a phrase may contain spaces
+// (e.g. "morning routine") and is matched whole.
 func normalizeKeywords(s string) string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.ToLower(strings.TrimSpace(p)); t != "" {
-			out = append(out, t)
-		}
-	}
-	return strings.Join(out, ",")
+	return strings.Join(splitKeywords(s), ",")
 }
 
-// KeywordPhrases returns the domain's normalized keyword-trigger phrases.
+// splitKeywords is normalizeKeywords as a list: trimmed, lowercased, no empties,
+// first occurrence kept. Nil when nothing remains.
+func splitKeywords(s string) []string {
+	parts := strings.Split(s, ",")
+	seen := make(map[string]bool, len(parts))
+	var out []string
+	for _, p := range parts {
+		t := strings.ToLower(strings.TrimSpace(p))
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+// KeywordPhrases returns every phrase that routes this domain: the agent's own
+// keyword triggers followed by those consolidation added, normalized and
+// deduplicated.
 func (d Domain) KeywordPhrases() []string {
-	if d.KeywordTriggers == "" {
+	return splitKeywords(d.KeywordTriggers + "," + d.AutoKeywords)
+}
+
+// AgentKeywordPhrases returns the agent/operator-owned keyword triggers.
+func (d Domain) AgentKeywordPhrases() []string { return splitKeywords(d.KeywordTriggers) }
+
+// AutoKeywordPhrases returns the keyword triggers consolidation maintains.
+func (d Domain) AutoKeywordPhrases() []string { return splitKeywords(d.AutoKeywords) }
+
+// BlockedKeywordPhrases returns the phrases consolidation may not add back.
+func (d Domain) BlockedKeywordPhrases() []string { return splitKeywords(d.BlockedKeywords) }
+
+// MatchKeywords returns every distinct keyword phrase (see KeywordPhrases) that
+// appears in text as a whole phrase on word boundaries (case-insensitive), in
+// KeywordPhrases order; nil when none does. The boundary check means a phrase
+// like "git" matches the word "git" but not "legitimate", and "morning routine"
+// matches only that contiguous phrase.
+func (d Domain) MatchKeywords(text string) []string {
+	if text == "" {
 		return nil
 	}
-	return strings.Split(normalizeKeywords(d.KeywordTriggers), ",")
-}
-
-// MatchKeyword reports the first keyword phrase that appears in text as a whole
-// phrase on word boundaries (case-insensitive), and whether any matched. The
-// boundary check means a phrase like "git" matches the word "git" but not
-// "legitimate", and "morning routine" matches only that contiguous phrase.
-func (d Domain) MatchKeyword(text string) (string, bool) {
 	lower := strings.ToLower(text)
+	var out []string
 	for _, p := range d.KeywordPhrases() {
 		if phraseMatch(lower, p) {
-			return p, true
+			out = append(out, p)
 		}
 	}
-	return "", false
+	return out
 }
 
 // phraseMatch reports whether phrase occurs in text (both lowercase) bounded by
@@ -457,7 +501,8 @@ func scanDomain(sc scanner) (Domain, error) {
 	)
 	err := sc.Scan(&d.ID, &typ, &d.Name, &status,
 		&d.Version, &d.Summary, &stateJSON, &d.SchemaName, &d.SchemaVersion,
-		&lastActivePtr, &d.Triggers, &d.KeywordTriggers, &createdAt, &updatedAt, &archivedAt)
+		&lastActivePtr, &d.Triggers, &d.KeywordTriggers, &d.AutoKeywords, &d.BlockedKeywords,
+		&createdAt, &updatedAt, &archivedAt)
 	if err != nil {
 		return Domain{}, err
 	}

@@ -350,6 +350,84 @@ func TestDomainCreateStickyAndList(t *testing.T) {
 	hs.fail(t, "domain_list", map[string]any{"status": "retired"}, "status must be one of: active, archived")
 }
 
+// The agent edits one keyword list. Refused phrases are named in the result
+// with a short reason and the rest are applied; domain_get shows which
+// keywords were added automatically; leaving one of those out removes it for good.
+func TestDomainKeywordTools(t *testing.T) {
+	hs := newHarness(t, nil)
+	s := hs.store(t)
+	for _, n := range []string{"A", "B", "C"} {
+		if _, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{Name: n, AutoKeywords: "invoice"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := hs.ok(t, "domain_create", map[string]any{
+		"name": "Billing", "keyword_triggers": []any{"Today", "invoice", "invoice run", "good morning"},
+	})
+	id := extractID(t, got, "d")
+	if want := fmt.Sprintf(`Created domain %s (name="Billing", sticky=false). Not added: "today" (too common), "invoice" (already used by 3 domains), "good morning" (too common).`, id); got != want {
+		t.Fatalf("create result:\n%s\nwant:\n%s", got, want)
+	}
+
+	// Consolidation adds two keywords of its own.
+	auto := "vendor bills,accounts payable"
+	if err := s.UpdateDomain(ctx, s.DB(), id, store.UpdateDomainParams{AutoKeywords: &auto}); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("Domain %s \"Billing\" (sticky=false, status=active, version=2)\n"+
+		"Keyword triggers (auto-load when mentioned): invoice run\n"+
+		"Keyword triggers added automatically: vendor bills,accounts payable\n"+
+		"Memories: (none active)\n", id)
+	if got := hs.ok(t, "domain_get", map[string]any{"id": id}); got != want {
+		t.Fatalf("domain_get =\n%s\nwant\n%s", got, want)
+	}
+
+	for _, tc := range []struct {
+		name                string
+		set                 []any
+		result              string
+		agent, auto, blocks string
+	}{
+		{
+			"all accepted",
+			[]any{"invoice run", "vendor bills", "ledger close"},
+			"Updated domain %s.", "invoice run,ledger close", "vendor bills", "accounts payable",
+		},
+		{
+			"refused phrases named, rest applied",
+			[]any{"invoice run", "thanks", "invoice"},
+			`Updated domain %s. Not added: "thanks" (too common), "invoice" (already used by 3 domains).`,
+			"invoice run", "", "accounts payable,vendor bills",
+		},
+		{
+			"blocked phrase re-added",
+			[]any{"invoice run", "accounts payable"},
+			"Updated domain %s.", "invoice run,accounts payable", "", "vendor bills",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hs.ok(t, "domain_update", map[string]any{"id": id, "set_keyword_triggers": tc.set})
+			if want := fmt.Sprintf(tc.result, id); got != want {
+				t.Fatalf("result = %q, want %q", got, want)
+			}
+			d, _ := s.GetDomain(ctx, s.DB(), id, false)
+			if d.KeywordTriggers != tc.agent || d.AutoKeywords != tc.auto || d.BlockedKeywords != tc.blocks {
+				t.Fatalf("agent=%q auto=%q blocked=%q, want %q %q %q",
+					d.KeywordTriggers, d.AutoKeywords, d.BlockedKeywords, tc.agent, tc.auto, tc.blocks)
+			}
+		})
+	}
+
+	// Keywords and other fields in one call: one version bump.
+	before, _ := s.GetDomain(ctx, s.DB(), id, false)
+	hs.ok(t, "domain_update", map[string]any{"id": id, "set_summary": "bills", "set_keyword_triggers": []any{"invoice run"}})
+	after, _ := s.GetDomain(ctx, s.DB(), id, false)
+	if after.Version != before.Version+1 || after.Summary != "bills" || after.KeywordTriggers != "invoice run" {
+		t.Fatalf("combined update: %+v (version before %d)", after, before.Version)
+	}
+}
+
 // domain_get renders the header with sticky/status/version, the summary,
 // both trigger lines, the three state lines and the memory list exactly.
 func TestDomainGetRendersEverything(t *testing.T) {

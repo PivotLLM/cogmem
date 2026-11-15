@@ -37,6 +37,70 @@ func TestValidateHappyPath(t *testing.T) {
 	}
 }
 
+// Only an update that sets nothing but keyword_triggers may omit evidence;
+// evidence it does carry is still checked, and every other domain op still
+// needs it.
+func TestValidateKeywordOnlyUpdateEvidence(t *testing.T) {
+	in := sampleInput()
+	yes := true
+	for _, tc := range []struct {
+		name string
+		op   DomainOp
+		ok   bool
+	}{
+		{"keyword-only, no evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel"}, true},
+		{"keyword-only with reason, no evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", Reason: "routing"}, true},
+		{"keyword-only, valid evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", Evidence: ev(512, 512)}, true},
+		{"keyword-only, bad evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", Evidence: ev(999, 999)}, false},
+		{"keyword-only, unknown domain", DomainOp{Op: "update", ID: "dX", KeywordTriggers: "kestrel"}, false},
+		{"keywords and summary, no evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", Summary: "s"}, false},
+		{"keywords and name, no evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", Name: "n"}, false},
+		{"keywords and state, no evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", State: &store.DomainState{}}, false},
+		{"keywords and status, no evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", Status: "archived"}, false},
+		{"keywords and triggers, no evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", Triggers: "mail"}, false},
+		{"keywords and sticky, no evidence", DomainOp{Op: "update", ID: "d4", KeywordTriggers: "kestrel", Sticky: &yes}, false},
+		{"empty update, no evidence", DomainOp{Op: "update", ID: "d4"}, false},
+		{"create with keywords, no evidence", DomainOp{Op: "create", TmpID: "t1", Name: "X", KeywordTriggers: "kestrel"}, false},
+		{"archive, no evidence", DomainOp{Op: "archive", ID: "d4"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Output{DomainOps: []DomainOp{tc.op}}.Validate(in)
+			if (err == nil) != tc.ok {
+				t.Fatalf("Validate = %v, want ok=%v", err, tc.ok)
+			}
+		})
+	}
+}
+
+// Keyword lists get their own, larger cap; tool triggers keep theirs. Both
+// accept exactly the cap.
+func TestValidateLengthCaps(t *testing.T) {
+	in := sampleInput()
+	for _, tc := range []struct {
+		name string
+		op   DomainOp
+		ok   bool
+	}{
+		{"keywords at cap", DomainOp{KeywordTriggers: strings.Repeat("x", maxKeywordsLen)}, true},
+		{"keywords over cap", DomainOp{KeywordTriggers: strings.Repeat("x", maxKeywordsLen+1)}, false},
+		{"keywords above the trigger cap", DomainOp{KeywordTriggers: strings.Repeat("x", maxTriggersLen+1)}, true},
+		{"triggers at cap", DomainOp{Triggers: strings.Repeat("x", maxTriggersLen)}, true},
+		{"triggers over cap", DomainOp{Triggers: strings.Repeat("x", maxTriggersLen+1)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			op := tc.op
+			op.Op, op.ID, op.Evidence = "update", "d4", ev(512, 512)
+			err := Output{DomainOps: []DomainOp{op}}.Validate(in)
+			if (err == nil) != tc.ok {
+				t.Fatalf("Validate = %v, want ok=%v", err, tc.ok)
+			}
+		})
+	}
+	if maxKeywordsLen != 2048 || maxTriggersLen != 512 {
+		t.Fatalf("caps = %d/%d, want 2048/512", maxKeywordsLen, maxTriggersLen)
+	}
+}
+
 func TestValidateRejections(t *testing.T) {
 	in := sampleInput()
 	cases := []struct {
@@ -115,8 +179,13 @@ func TestValidateRejections(t *testing.T) {
 		},
 		{
 			"keyword triggers too long",
-			Output{DomainOps: []DomainOp{{Op: "update", ID: "d4", KeywordTriggers: strings.Repeat("x", maxTriggersLen+1), Evidence: ev(512, 512)}}},
-			"domain_ops[0]: keyword_triggers too long (513 > 512)",
+			Output{DomainOps: []DomainOp{{Op: "update", ID: "d4", KeywordTriggers: strings.Repeat("x", maxKeywordsLen+1), Evidence: ev(512, 512)}}},
+			"domain_ops[0]: keyword_triggers too long (2049 > 2048)",
+		},
+		{
+			"keyword triggers too long on create",
+			Output{DomainOps: []DomainOp{{Op: "create", TmpID: "t1", Name: "X", KeywordTriggers: strings.Repeat("x", maxKeywordsLen+1), Evidence: ev(512, 512)}}},
+			"domain_ops[0]: keyword_triggers too long (2049 > 2048)",
 		},
 		// Type is REQUIRED, not merely valid-if-present. The old contract
 		// checked each field only when it was non-empty, so an op that named no
@@ -431,6 +500,26 @@ func TestDefaultPromptAsksForHousekeeping(t *testing.T) {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt is missing %q", want)
 		}
+	}
+}
+
+// The prompt asks for keywords on every topic domain, explains the read-only
+// agent and blocked lists, and no longer describes lexical routing.
+func TestDefaultPromptAsksForKeywords(t *testing.T) {
+	p := DefaultPrompt()
+	for _, want := range []string{
+		"EVERY topic domain",
+		"plural/singular and spelling",
+		"never common words",
+		"`agent_keyword_triggers`",
+		"`blocked_keywords`",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt is missing %q", want)
+		}
+	}
+	if strings.Contains(p, "lexical") {
+		t.Error("prompt still describes lexical matching")
 	}
 }
 

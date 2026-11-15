@@ -61,12 +61,12 @@ func TestApplySupersedeEndToEnd(t *testing.T) {
 		ConflictLedger: []LedgerEntry{{Resolved: "swapped blue rule", Reason: "user said so", Evidence: store.Evidence{SeqStart: 512, SeqEnd: 512}}},
 	}
 
-	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle", Model: "test-model"})
+	res, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle", Model: "test-model"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("applied = %d, want 1", n)
+	if res.Applied != 1 {
+		t.Fatalf("applied = %d, want 1", res.Applied)
 	}
 	old, err := s.GetMemory(ctx, s.DB(), h.ID)
 	if err != nil {
@@ -114,12 +114,12 @@ func TestApplyCreateWithTmpID(t *testing.T) {
 		DomainOps: []DomainOp{{Op: "create", TmpID: "t1", Name: "New Project", Summary: "x", Reason: "new topic", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}},
 		MemoryOps: []MemoryOp{{Op: "add", Domain: "t1", Type: "fact", Text: "a durable fact", Confidence: 0.9, Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}},
 	}
-	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	res, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("applied = %d, want 2", n)
+	if res.Applied != 2 {
+		t.Fatalf("applied = %d, want 2", res.Applied)
 	}
 	proj := domainByName(t, s, "New Project")
 	if proj.Sticky() || proj.Summary != "x" {
@@ -187,11 +187,191 @@ func TestApplySetsKeywordTriggers(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	wf := domainByName(t, s, "Daily Ops")
-	if wf.KeywordTriggers != "morning routine,weekly report" {
-		t.Fatalf("keyword_triggers = %q, want normalized list", wf.KeywordTriggers)
+	if wf.AutoKeywords != "morning routine,weekly report" || wf.KeywordTriggers != "" {
+		t.Fatalf("auto=%q agent=%q, want the normalized list in consolidation's own", wf.AutoKeywords, wf.KeywordTriggers)
 	}
-	if _, ok := wf.MatchKeyword("time for your morning routine"); !ok {
+	if kw := wf.MatchKeywords("time for your morning routine"); len(kw) != 1 {
 		t.Fatalf("worker-set keyword trigger should match the phrase")
+	}
+}
+
+// A domain op's keyword_triggers sets consolidation's own list only. It can
+// never add a phrase the agent blocked, duplicate one of the agent's, or store
+// a generic one; it never alters the agent's or the blocked list; and dropping
+// phrases does not fail the apply.
+func TestApplyKeywordOwnership(t *testing.T) {
+	const ev = 1
+	for _, tc := range []struct {
+		name                 string
+		agent, auto, blocked string // existing domain
+		others               int    // other domains already using "release train"
+		proposed             string
+		wantAuto             string
+		wantDropped          []DroppedKeyword // DomainID filled in below
+	}{
+		{name: "replaces the auto list", auto: "old phrase", proposed: "Kestrel, falcon nest", wantAuto: "kestrel,falcon nest"},
+		{name: "skips agent phrases", agent: "invoice run", proposed: "invoice run,vendor bills", wantAuto: "vendor bills"},
+		{name: "skips blocked phrases", blocked: "vendor bills", proposed: "vendor bills,ledger close", wantAuto: "ledger close"},
+		{
+			name: "drops generic phrases", auto: "kestrel", proposed: "today,good morning,kestrel", wantAuto: "kestrel",
+			wantDropped: []DroppedKeyword{{Phrase: "today", Reason: "too common"}, {Phrase: "good morning", Reason: "too common"}},
+		},
+		{
+			name: "drops widely shared phrases", others: 3, proposed: "release train,kestrel", wantAuto: "kestrel",
+			wantDropped: []DroppedKeyword{{Phrase: "release train", Reason: "already used by 3 domains"}},
+		},
+		{name: "two other users is fine", others: 2, proposed: "release train", wantAuto: "release train"},
+		{
+			name: "own phrase kept although now widely shared", auto: "release train", others: 3,
+			proposed: "release train,kestrel", wantAuto: "release train,kestrel",
+		},
+		{
+			name: "nothing surviving leaves the list unchanged", auto: "kestrel", agent: "invoice run", blocked: "ledger close",
+			proposed: "invoice run,today,ledger close", wantAuto: "kestrel",
+			wantDropped: []DroppedKeyword{{Phrase: "today", Reason: "too common"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := openStore(t)
+			for i := range tc.others {
+				if _, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{
+					Name: "Other " + string(rune('A'+i)), AutoKeywords: "release train",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{
+				Name: "Target", KeywordTriggers: tc.agent, AutoKeywords: tc.auto, BlockedKeywords: tc.blocked,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := Output{DomainOps: []DomainOp{{
+				Op: "update", ID: d.ID, KeywordTriggers: tc.proposed, Evidence: store.Evidence{SeqStart: ev, SeqEnd: ev},
+			}}}
+			res, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+			if err != nil || res.Applied != 1 {
+				t.Fatalf("apply: applied=%d err=%v, want the op applied", res.Applied, err)
+			}
+			got, _ := s.GetDomain(ctx, s.DB(), d.ID, false)
+			if got.AutoKeywords != tc.wantAuto {
+				t.Errorf("auto = %q, want %q", got.AutoKeywords, tc.wantAuto)
+			}
+			if got.KeywordTriggers != d.KeywordTriggers || got.BlockedKeywords != d.BlockedKeywords {
+				t.Errorf("agent=%q blocked=%q changed from %q %q", got.KeywordTriggers, got.BlockedKeywords, d.KeywordTriggers, d.BlockedKeywords)
+			}
+			var want []DroppedKeyword
+			for _, w := range tc.wantDropped {
+				w.DomainID = d.ID
+				want = append(want, w)
+			}
+			if !reflect.DeepEqual(res.DroppedKeywords, want) {
+				t.Errorf("dropped = %+v, want %+v", res.DroppedKeywords, want)
+			}
+		})
+	}
+}
+
+// Apply reads the agent's and blocked lists inside its own transaction, not
+// from the view the model was shown: a phrase the agent blocked after the view
+// was built is still not added.
+func TestApplyReadsBlockedListAtApplyTime(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{Name: "Billing", AutoKeywords: "vendor bills"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := NewWorker(s, nil)
+	view := w.currentState(ctx)
+	if dv := domainView(t, Input{CurrentState: view}, d.ID); dv.KeywordTriggers != "vendor bills" || dv.BlockedKeywords != "" {
+		t.Fatalf("view = %+v", dv)
+	}
+	// The agent removes the phrase (it becomes blocked) while the model works.
+	blocked, empty := "vendor bills", ""
+	if err = s.UpdateDomain(ctx, s.DB(), d.ID, store.UpdateDomainParams{AutoKeywords: &empty, BlockedKeywords: &blocked}); err != nil {
+		t.Fatal(err)
+	}
+	out := Output{DomainOps: []DomainOp{{Op: "update", ID: d.ID, KeywordTriggers: "vendor bills,accounts payable"}}}
+	if err = out.Validate(Input{CurrentState: view}); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if _, err = Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetDomain(ctx, s.DB(), d.ID, false)
+	if got.AutoKeywords != "accounts payable" || got.BlockedKeywords != "vendor bills" {
+		t.Fatalf("auto=%q blocked=%q, want the blocked phrase kept out", got.AutoKeywords, got.BlockedKeywords)
+	}
+}
+
+// A keyword-only update may carry no evidence; it applies, and its audit
+// event records the empty range rather than failing.
+func TestApplyKeywordOnlyUpdateWithoutEvidence(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{Name: "Birds"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := Input{
+		CurrentState: CurrentState{Domains: []DomainView{{ID: d.ID, Name: "Birds"}}},
+		NewMessages:  []Message{{Seq: 40, Role: "user", Text: "unrelated"}},
+	}
+	out := Output{DomainOps: []DomainOp{{Op: "update", ID: d.ID, KeywordTriggers: "kestrel,falcon nest"}}}
+	if err = out.Validate(in); err != nil {
+		t.Fatalf("keyword-only update without evidence rejected: %v", err)
+	}
+	res, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	if err != nil || res.Applied != 1 {
+		t.Fatalf("apply = %+v, %v", res, err)
+	}
+	if got, _ := s.GetDomain(ctx, s.DB(), d.ID, false); got.AutoKeywords != "kestrel,falcon nest" {
+		t.Fatalf("auto = %q", got.AutoKeywords)
+	}
+	events := eventsOfType(listEvents(t, s), "update")
+	if len(events) != 1 || events[0].DomainID != d.ID || events[0].Evidence != `{"seq_start":0,"seq_end":0}` {
+		t.Fatalf("update events = %+v", events)
+	}
+}
+
+// On create, generic phrases are dropped and reported against the new id.
+func TestApplyCreateDropsGenericKeywords(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	out := Output{DomainOps: []DomainOp{{
+		Op: "create", TmpID: "t1", Name: "Birds", KeywordTriggers: "thanks,kestrel",
+		Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1},
+	}}}
+	res, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	d := domainByName(t, s, "Birds")
+	if d.AutoKeywords != "kestrel" || d.KeywordTriggers != "" || d.BlockedKeywords != "" {
+		t.Fatalf("domain = %+v", d)
+	}
+	want := []DroppedKeyword{{DomainID: d.ID, Phrase: "thanks", Reason: "too common"}}
+	if !reflect.DeepEqual(res.DroppedKeywords, want) {
+		t.Fatalf("dropped = %+v, want %+v", res.DroppedKeywords, want)
+	}
+}
+
+// An update op without keyword_triggers leaves consolidation's list alone.
+func TestApplyUpdateWithoutKeywordsKeepsThem(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{Name: "Birds", AutoKeywords: "kestrel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Output{DomainOps: []DomainOp{{Op: "update", ID: d.ID, Summary: "raptors", Evidence: store.Evidence{SeqStart: 1, SeqEnd: 1}}}}
+	if _, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetDomain(ctx, s.DB(), d.ID, false); got.AutoKeywords != "kestrel" {
+		t.Fatalf("auto = %q, want unchanged", got.AutoKeywords)
 	}
 }
 
@@ -259,12 +439,12 @@ func TestApplyUpdateDomainAllFields(t *testing.T) {
 		Reason:          "consolidated status",
 		Evidence:        store.Evidence{SeqStart: 7, SeqEnd: 9},
 	}}}
-	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	res, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("applied = %d, want 1", n)
+	if res.Applied != 1 {
+		t.Fatalf("applied = %d, want 1", res.Applied)
 	}
 
 	got, err := s.GetDomain(ctx, s.DB(), d.ID, false)
@@ -283,8 +463,8 @@ func TestApplyUpdateDomainAllFields(t *testing.T) {
 	if got.Triggers != "trello,google_calendar" {
 		t.Errorf("triggers = %q, want normalized list", got.Triggers)
 	}
-	if got.KeywordTriggers != "roadmap review,quarterly plan" {
-		t.Errorf("keyword_triggers = %q, want normalized list", got.KeywordTriggers)
+	if got.AutoKeywords != "roadmap review,quarterly plan" || got.KeywordTriggers != "" {
+		t.Errorf("auto=%q agent=%q, want the normalized list in consolidation's own", got.AutoKeywords, got.KeywordTriggers)
 	}
 	if !got.Sticky() {
 		t.Error("sticky = false, want true")
@@ -312,12 +492,12 @@ func TestApplyArchiveDomain(t *testing.T) {
 		Op: "archive", ID: d.ID, Reason: "project shipped and closed",
 		Evidence: store.Evidence{SeqStart: 3, SeqEnd: 4},
 	}}}
-	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	res, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("applied = %d, want 1", n)
+	if res.Applied != 1 {
+		t.Fatalf("applied = %d, want 1", res.Applied)
 	}
 	got, err := s.GetDomain(ctx, s.DB(), d.ID, false)
 	if err != nil {
@@ -343,12 +523,12 @@ func TestApplyRetireMemory(t *testing.T) {
 	out := Output{MemoryOps: []MemoryOp{{
 		Op: "retire", ID: h.ID, Reason: "contradicted by a newer preference",
 	}}}
-	n, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
+	res, err := Apply(ctx, s, out, ApplyContext{Actor: "sleep_cycle"})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("applied = %d, want 1", n)
+	if res.Applied != 1 {
+		t.Fatalf("applied = %d, want 1", res.Applied)
 	}
 	got, err := s.GetMemory(ctx, s.DB(), h.ID)
 	if err != nil {
@@ -402,12 +582,12 @@ func TestApplyRollsBackOnFailure(t *testing.T) {
 			}
 
 			// Called directly, without Validate, so the bad op reaches the store.
-			applied, err := Apply(ctx, s, tc.out, ApplyContext{Actor: "sleep_cycle"})
+			res, err := Apply(ctx, s, tc.out, ApplyContext{Actor: "sleep_cycle"})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("apply err = %v, want %v", err, tc.wantErr)
 			}
-			if applied != 0 {
-				t.Fatalf("applied = %d on a rolled-back apply, want 0", applied)
+			if res.Applied != 0 {
+				t.Fatalf("applied = %d on a rolled-back apply, want 0", res.Applied)
 			}
 			after, err := s.ListDomains(ctx, s.DB())
 			if err != nil {

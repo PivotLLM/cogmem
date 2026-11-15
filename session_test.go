@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -264,6 +265,135 @@ func TestSession_RecordToolUseRing(t *testing.T) {
 	got[0] = "mutated"
 	if s.RecentTools()[0] != "y" {
 		t.Fatal("RecentTools must return a copy")
+	}
+}
+
+// The recent-text ring is newest first and skips blank texts and a repeat of
+// the newest; earlierTexts hands out at most maxRecentTexts, leaving out the
+// current text when it is the newest (Recall called twice for one message).
+func TestSession_RecentTextsRing(t *testing.T) {
+	s := &Session{}
+	if got := s.earlierTexts("m1"); got != nil {
+		t.Fatalf("empty ring gave %v", got)
+	}
+	s.recordRouteText("")
+	s.recordRouteText("  \n")
+	if len(s.recentTexts) != 0 {
+		t.Fatalf("blank texts were recorded: %q", s.recentTexts)
+	}
+	for _, m := range []string{"m1", "m2", "m2", "m3", "m4", "m5"} {
+		s.recordRouteText(m)
+	}
+	for _, tc := range []struct {
+		name, current string
+		want          []string
+	}{
+		{"new message sees the three before it", "m6", []string{"m5", "m4", "m3"}},
+		{"repeated Recall skips itself", "m5", []string{"m4", "m3", "m2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s.earlierTexts(tc.current); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("earlierTexts(%q) = %v, want %v", tc.current, got, tc.want)
+			}
+		})
+	}
+	if want := []string{"m5", "m4", "m3", "m2"}; !reflect.DeepEqual(s.recentTexts, want) {
+		t.Fatalf("ring = %v, want %v (repeat not pushed, capped at %d)", s.recentTexts, want, maxRecentTexts+1)
+	}
+	got := s.earlierTexts("m6")
+	got[0] = "mutated"
+	if s.recentTexts[0] != "m5" {
+		t.Fatal("earlierTexts must return a copy")
+	}
+
+	// A text already in the ring moves to the front instead of being added
+	// again, and is never its own earlier message wherever it sits.
+	s.recordRouteText("m3")
+	if want := []string{"m3", "m5", "m4", "m2"}; !reflect.DeepEqual(s.recentTexts, want) {
+		t.Fatalf("ring after repeating m3 = %v, want %v", s.recentTexts, want)
+	}
+	if got := s.earlierTexts("m4"); !reflect.DeepEqual(got, []string{"m3", "m5", "m2"}) {
+		t.Fatalf("earlierTexts(m4) = %v, want m4 left out", got)
+	}
+}
+
+// Recall("A"), Recall("B"), Recall("A"): the third call does not see "A" as
+// an earlier message, and the ring holds each text once.
+func TestSession_RecallRepeatedTextIsNotEarlier(t *testing.T) {
+	s := NewSession(SessionOptions{ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem")})
+	defer s.Close()
+	ctx := context.Background()
+	s.Recall(ctx, "A")
+	s.Recall(ctx, "B")
+	// What the third Recall("A") is given as earlier messages.
+	if got := s.earlierTexts("A"); !reflect.DeepEqual(got, []string{"B"}) {
+		t.Fatalf("earlier texts for the third Recall = %v, want only B", got)
+	}
+	s.Recall(ctx, "A")
+	s.recentMu.Lock()
+	ring := slices.Clone(s.recentTexts)
+	s.recentMu.Unlock()
+	if !reflect.DeepEqual(ring, []string{"A", "B"}) {
+		t.Fatalf("ring = %v, want A and B once each", ring)
+	}
+}
+
+// Through Recall: a keyword in one message keeps its domain loaded for the
+// next maxRecentTexts messages, labelled as an earlier match; a repeated
+// Recall for one message does not use up the window.
+func TestSession_RecallMatchesEarlierMessages(t *testing.T) {
+	s := NewSession(SessionOptions{
+		ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem"),
+		Settings: Settings{Prompt: PromptSettings{TopKDomains: 1}},
+	})
+	defer s.Close()
+	st := s.Store()
+	birds := mustDomain(t, st, store.CreateDomainParams{Name: "Birds", KeywordTriggers: "kestrel"})
+	mustMemory(t, st, store.AddMemoryParams{DomainID: birds.ID, Type: store.TypeFact, Text: "Kestrels hover."})
+	decoy := mustDomain(t, st, store.CreateDomainParams{Name: "Decoy", Summary: "misc"})
+	header := func(why string) string {
+		return "## Injected cogmem domain: Birds (" + birds.ID + ") — " + why + "\n"
+	}
+	recall := func(text string) string {
+		ageDomain(t, st, birds.ID)
+		mustTouch(t, st, decoy.ID)
+		routed, _ := injectionText(s.Recall(context.Background(), text), PlaceCurrentUser)
+		return routed
+	}
+
+	if got := recall("saw a kestrel"); !strings.HasPrefix(got, header(`loaded by keyword trigger "kestrel"`)) {
+		t.Fatalf("current match:\n%s", got)
+	}
+	earlier := header(`loaded by keyword trigger "kestrel" in a recent message`)
+	for _, text := range []string{"one", "one", "", "two", "three"} {
+		if got := recall(text); !strings.HasPrefix(got, earlier) {
+			t.Fatalf("Recall(%q) should still load Birds from the earlier message:\n%s", text, got)
+		}
+	}
+	if got := recall("four"); strings.Contains(got, "Kestrels hover.") {
+		t.Fatalf("after %d more messages the earlier match must expire:\n%s", maxRecentTexts, got)
+	}
+}
+
+// Recalls racing each other with different texts are race-free (go test -race).
+func TestSession_RecentTextsConcurrent(t *testing.T) {
+	s := NewSession(SessionOptions{ID: "alice", Dir: filepath.Join(t.TempDir(), "cogmem")})
+	defer s.Close()
+	ctx := context.Background()
+	mustDomain(t, s.Store(), store.CreateDomainParams{Name: "Birds", KeywordTriggers: "kestrel"})
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			for j := range 20 {
+				_ = s.Recall(ctx, fmt.Sprintf("kestrel %d %d", i, j))
+			}
+		})
+	}
+	wg.Wait()
+	s.recentMu.Lock()
+	defer s.recentMu.Unlock()
+	if len(s.recentTexts) != maxRecentTexts+1 {
+		t.Fatalf("ring = %v, want %d entries", s.recentTexts, maxRecentTexts+1)
 	}
 }
 

@@ -107,6 +107,12 @@ func Open(path string, opts ...Option) (*Store, error) {
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "journal_mode("+journalMode+")")
 	q.Add("_pragma", "synchronous("+synchronousMode+")")
+	// Every transaction (WithTx) writes, and most read first. A deferred BEGIN
+	// takes a read snapshot that another connection's commit makes stale, and
+	// the later upgrade to a write lock then fails at once with SQLITE_BUSY —
+	// busy_timeout cannot retry it. BEGIN IMMEDIATE takes the write lock up
+	// front, so a concurrent writer waits under busy_timeout instead.
+	q.Add("_txlock", "immediate")
 	db, err := sql.Open("sqlite", path+"?"+q.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("cogmem: open %s: %w", path, err)
@@ -603,9 +609,13 @@ func (s *Store) ensureDomainColumns(ctx context.Context) error {
 			return err
 		}
 	}
-	if !have["keyword_triggers"] {
+	// Column names are constants from this list, never input.
+	for _, col := range []string{"keyword_triggers", "auto_keywords", "blocked_keywords"} {
+		if have[col] {
+			continue
+		}
 		if _, err := s.db.ExecContext(ctx,
-			`ALTER TABLE domains ADD COLUMN keyword_triggers TEXT NOT NULL DEFAULT ''`); err != nil {
+			`ALTER TABLE domains ADD COLUMN `+col+` TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
 	}
@@ -737,7 +747,8 @@ func (s *Store) seedGeneralOnce(ctx context.Context) error {
 }
 
 // WithTx runs fn inside a transaction, committing on success and rolling back
-// on error or panic.
+// on error or panic. The transaction holds the write lock from its start
+// (BEGIN IMMEDIATE, see Open), so it is for writes; read on DB() otherwise.
 func (s *Store) WithTx(ctx context.Context, fn func(tx *sql.Tx) error) (err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

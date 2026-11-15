@@ -40,17 +40,24 @@ type CurrentState struct {
 }
 
 // DomainView is a compact projection of a domain for the model.
+//
+// KeywordTriggers is consolidation's own keyword list, which a domain op's
+// keyword_triggers replaces. AgentKeywordTriggers and BlockedKeywords are
+// read-only to the model: the agent's own list, and the phrases the agent
+// removed from consolidation's list, which it may not propose again.
 type DomainView struct {
-	ID              string            `json:"id"`
-	Sticky          bool              `json:"sticky"`
-	Name            string            `json:"name"`
-	Status          string            `json:"status"`
-	Version         int64             `json:"version"`
-	Summary         string            `json:"summary"`
-	State           store.DomainState `json:"state"`
-	Triggers        string            `json:"triggers,omitempty"`
-	KeywordTriggers string            `json:"keyword_triggers,omitempty"`
-	Memories        []MemoryView      `json:"memories"`
+	ID                   string            `json:"id"`
+	Sticky               bool              `json:"sticky"`
+	Name                 string            `json:"name"`
+	Status               string            `json:"status"`
+	Version              int64             `json:"version"`
+	Summary              string            `json:"summary"`
+	State                store.DomainState `json:"state"`
+	Triggers             string            `json:"triggers,omitempty"`
+	KeywordTriggers      string            `json:"keyword_triggers,omitempty"`
+	AgentKeywordTriggers string            `json:"agent_keyword_triggers,omitempty"`
+	BlockedKeywords      string            `json:"blocked_keywords,omitempty"`
+	Memories             []MemoryView      `json:"memories"`
 }
 
 // MemoryView is a compact projection of a hook for the model.
@@ -102,10 +109,18 @@ type DomainOp struct {
 	Summary         string             `json:"summary,omitempty"`
 	Status          string             `json:"status,omitempty"`
 	Triggers        string             `json:"triggers,omitempty"`         // comma-delimited tool-name substrings (auto-load on tool use)
-	KeywordTriggers string             `json:"keyword_triggers,omitempty"` // comma-delimited message-text phrases (auto-load when mentioned)
+	KeywordTriggers string             `json:"keyword_triggers,omitempty"` // consolidation's comma-delimited message-text phrases (auto-load when mentioned); non-empty replaces its list
 	Reason          string             `json:"reason,omitempty"`
 	State           *store.DomainState `json:"state,omitempty"`
 	Evidence        store.Evidence     `json:"evidence"`
+}
+
+// keywordOnlyUpdate reports whether op is an update that sets keyword_triggers
+// and nothing else that writes to the domain.
+func (op DomainOp) keywordOnlyUpdate() bool {
+	return op.Op == "update" && op.KeywordTriggers != "" &&
+		op.Name == "" && op.Summary == "" && op.State == nil && op.Status == "" &&
+		op.Triggers == "" && op.Sticky == nil
 }
 
 // MemoryOp is an add/supersede/retire operation on a hook.
@@ -142,6 +157,11 @@ var validDomainStatuses = map[string]bool{"active": true, "archived": true}
 
 // maxTriggersLen caps the comma-delimited tool-trigger string a domain op may set.
 const maxTriggersLen = 512
+
+// maxKeywordsLen caps the comma-delimited keyword string a domain op may set.
+// Larger than maxTriggersLen because the model is asked for paraphrases and
+// spelling variants, not a handful of tool-name fragments.
+const maxKeywordsLen = 2048
 
 // Validate enforces the contract against the input. A single violation rejects
 // the whole payload (the worker then leaves the watermark unchanged and retries).
@@ -181,14 +201,21 @@ func (o Output) Validate(in Input) error {
 	// Collect tmp ids created this payload (hooks may reference them).
 	tmpIDs := map[string]bool{}
 	for i, op := range o.DomainOps {
-		if err := evOK(op.Evidence); err != nil {
-			return fmt.Errorf("domain_ops[%d]: %w", i, err)
+		// A keyword-only update may carry no evidence, as a retire may: the
+		// model is asked to keep keywords on every topic domain, including ones
+		// this batch never mentions, so there is often no message to cite. It
+		// asserts nothing a message must justify — keywords only decide when a
+		// domain loads.
+		if !op.keywordOnlyUpdate() || !op.Evidence.IsZero() {
+			if err := evOK(op.Evidence); err != nil {
+				return fmt.Errorf("domain_ops[%d]: %w", i, err)
+			}
 		}
 		if len(op.Triggers) > maxTriggersLen {
 			return fmt.Errorf("domain_ops[%d]: triggers too long (%d > %d)", i, len(op.Triggers), maxTriggersLen)
 		}
-		if len(op.KeywordTriggers) > maxTriggersLen {
-			return fmt.Errorf("domain_ops[%d]: keyword_triggers too long (%d > %d)", i, len(op.KeywordTriggers), maxTriggersLen)
+		if len(op.KeywordTriggers) > maxKeywordsLen {
+			return fmt.Errorf("domain_ops[%d]: keyword_triggers too long (%d > %d)", i, len(op.KeywordTriggers), maxKeywordsLen)
 		}
 		switch op.Op {
 		case "create":

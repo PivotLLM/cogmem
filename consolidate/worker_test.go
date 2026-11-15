@@ -216,6 +216,41 @@ func listEvents(t *testing.T, s *store.Store) []store.Event {
 	return events
 }
 
+// The model sees consolidation's own keywords as keyword_triggers (the field
+// its ops write) and the agent's and blocked lists as read-only fields. A run
+// whose proposal includes generic keywords still succeeds, stores the rest and
+// names the dropped ones in its note.
+func TestRunOnceKeywordViewAndNote(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{
+		Name: "Billing", KeywordTriggers: "invoice run", AutoKeywords: "vendor bills", BlockedKeywords: "ledger close",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedInbox(t, s, sampleMessages())
+	raw := fmt.Sprintf(`{"domain_ops":[{"op":"update","id":%q,"keyword_triggers":"vendor bills,today,ledger close,accounts payable","evidence":{"seq_start":1,"seq_end":2}}],"memory_ops":[],"conflict_ledger":[]}`, d.ID)
+	m := &fakeModel{raw: raw}
+	res, err := NewWorker(s, m).RunOnce(ctx, params())
+	if err != nil || res.Status != "ok" || res.Applied != 1 {
+		t.Fatalf("RunOnce = %+v, %v; want ok with the op applied", res, err)
+	}
+
+	dv := domainView(t, decodeInput(t, m.snapshot()[0]), d.ID)
+	if dv.KeywordTriggers != "vendor bills" || dv.AgentKeywordTriggers != "invoice run" || dv.BlockedKeywords != "ledger close" {
+		t.Fatalf("view keywords = %q / agent %q / blocked %q", dv.KeywordTriggers, dv.AgentKeywordTriggers, dv.BlockedKeywords)
+	}
+	got, _ := s.GetDomain(ctx, s.DB(), d.ID, false)
+	if got.AutoKeywords != "vendor bills,accounts payable" || got.KeywordTriggers != "invoice run" || got.BlockedKeywords != "ledger close" {
+		t.Fatalf("stored agent=%q auto=%q blocked=%q", got.KeywordTriggers, got.AutoKeywords, got.BlockedKeywords)
+	}
+	run := lastRun(t, s)
+	if want := `keywords not added: ` + d.ID + ` "today" (too common)`; run.Status != "ok" || run.Error != "" || run.Note != want {
+		t.Fatalf("run = %+v, want ok with note %q", run, want)
+	}
+}
+
 // The README promises "up to four attempts in total". The constant is the
 // product's contract with hosts, so a change to it must be deliberate.
 func TestMaxModelAttemptsIsFour(t *testing.T) {

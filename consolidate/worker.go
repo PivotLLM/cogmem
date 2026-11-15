@@ -304,10 +304,11 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 		return result, nil
 	}
 
-	applied, err := Apply(ctx, w.st, out, ApplyContext{
+	applyRes, err := Apply(ctx, w.st, out, ApplyContext{
 		Actor: actorSleepCycle,
 		Model: model,
 	})
+	applied := applyRes.Applied
 	if err != nil {
 		w.recordRun(ctx, p, model, "error", applied, consolidated+1, lastSeq, inputTokens, outputTokens, err.Error(), "", started)
 		result.Status = "error"
@@ -328,16 +329,32 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 	// Auto-repairs are a NOTE: the run succeeded and the deviation was safely
 	// corrected. drainErr is a real error — the run itself was fine, but the
 	// cleanup genuinely failed — so it stays in Error.
-	runNote := ""
+	// Generic keywords the model proposed are dropped, not failed on: they are
+	// a NOTE too.
+	var notes []string
 	if len(repairs) > 0 {
-		runNote = "auto-repaired: " + strings.Join(repairs, "; ")
+		notes = append(notes, "auto-repaired: "+strings.Join(repairs, "; "))
 	}
+	if len(applyRes.DroppedKeywords) > 0 {
+		notes = append(notes, droppedKeywordsNote(applyRes.DroppedKeywords))
+	}
+	runNote := strings.Join(notes, "; ")
 	w.recordRun(ctx, p, model, "ok", applied, consolidated+1, lastSeq, inputTokens, outputTokens, drainErr, runNote, started)
 	w.dump(p, system, string(userJSON), raw, applied)
 
 	result.Applied = applied
 	result.Status = "ok"
 	return result, nil
+}
+
+// droppedKeywordsNote renders dropped keywords for the run note, e.g.
+// `keywords not added: d7 "today" (too common)`.
+func droppedKeywordsNote(dropped []DroppedKeyword) string {
+	parts := make([]string, len(dropped))
+	for i, d := range dropped {
+		parts[i] = fmt.Sprintf("%s %q (%s)", d.DomainID, d.Phrase, d.Reason)
+	}
+	return "keywords not added: " + strings.Join(parts, ", ")
 }
 
 // callModel asks the host for a reply and validates it as a consolidation
@@ -402,16 +419,20 @@ func (w *Worker) currentState(ctx context.Context) CurrentState {
 		return cs
 	}
 	for _, d := range domains {
+		// Consolidation's own list goes in keyword_triggers, the field its ops
+		// write; the agent's and the blocked lists are read-only context.
 		dv := DomainView{
-			ID:              d.ID,
-			Sticky:          d.Sticky(),
-			Name:            d.Name,
-			Status:          string(d.Status),
-			Version:         d.Version,
-			Summary:         d.Summary,
-			State:           d.State,
-			Triggers:        d.Triggers,
-			KeywordTriggers: d.KeywordTriggers,
+			ID:                   d.ID,
+			Sticky:               d.Sticky(),
+			Name:                 d.Name,
+			Status:               string(d.Status),
+			Version:              d.Version,
+			Summary:              d.Summary,
+			State:                d.State,
+			Triggers:             d.Triggers,
+			KeywordTriggers:      d.AutoKeywords,
+			AgentKeywordTriggers: d.KeywordTriggers,
+			BlockedKeywords:      d.BlockedKeywords,
 		}
 		// Prompt memories only: the model de-duplicates against what it sees, and
 		// a domain holding hundreds of event memories would crowd out everything

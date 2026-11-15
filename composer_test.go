@@ -563,156 +563,6 @@ func TestRoutedBlockTouchesMatchedNotRecency(t *testing.T) {
 	}
 }
 
-func TestRoutedBlockLexicalMatch(t *testing.T) {
-	s := newStore(t)
-	ctx := context.Background()
-	// "BioTech" is older/less recent; "Other" is the most recently touched.
-	bio := mustDomain(t, s, store.CreateDomainParams{Name: "BioTech", Summary: "research report"})
-	other := mustDomain(t, s, store.CreateDomainParams{Name: "Other", Summary: "misc"})
-	mustMemory(t, s, store.AddMemoryParams{DomainID: bio.ID, Type: store.TypeFact, Text: "The biotech report targets Q3."})
-	ageDomain(t, s, bio.ID)
-	mustTouch(t, s, other.ID)
-
-	c := New(s, WithTopKDomains(1))
-	res, err := c.RoutedBlock(ctx, RouteRequest{RouteText: "what's the status of the biotech report?", Trace: true})
-	if err != nil {
-		t.Fatalf("routed: %v", err)
-	}
-	// Lexical match on "biotech" must beat the more-recent "Other" for the slot.
-	if len(res.Loaded) != 1 || res.Loaded[0] != bio.ID {
-		t.Fatalf("expected lexical match %s, got %v", bio.ID, res.Loaded)
-	}
-	if len(res.Trace) != 1 || res.Trace[0].Signal != "match:biotech" {
-		t.Fatalf("trace = %+v, want match:biotech", res.Trace)
-	}
-}
-
-// Lexical candidates are ranked by hit count: a domain matching two salient
-// terms beats a more recent domain matching one.
-func TestRoutedBlockLexicalScoreBeatsRecency(t *testing.T) {
-	s := newStore(t)
-	two := mustDomain(t, s, store.CreateDomainParams{Name: "Raptors", Summary: "birds of prey"})
-	one := mustDomain(t, s, store.CreateDomainParams{Name: "Diary", Summary: "daily notes"})
-	mustMemory(t, s, store.AddMemoryParams{DomainID: two.ID, Type: store.TypeFact, Text: "The kestrel hunts at dawn."})
-	mustMemory(t, s, store.AddMemoryParams{DomainID: two.ID, Type: store.TypeFact, Text: "The falcon nests on the tower."})
-	mustMemory(t, s, store.AddMemoryParams{DomainID: one.ID, Type: store.TypeFact, Text: "Saw a kestrel today."})
-	ageDomain(t, s, two.ID)
-	mustTouch(t, s, one.ID) // Diary is more recent
-
-	res, err := New(s, WithTopKDomains(1)).RoutedBlock(context.Background(),
-		RouteRequest{RouteText: "tell me about the kestrel and the falcon", Trace: true})
-	if err != nil {
-		t.Fatalf("routed: %v", err)
-	}
-	if len(res.Loaded) != 1 || res.Loaded[0] != two.ID {
-		t.Fatalf("two-hit domain %s should win over more-recent one-hit domain, got %v", two.ID, res.Loaded)
-	}
-	if res.Trace[0].Signal != "match:kestrel" {
-		t.Fatalf("signal = %q, want match:kestrel (first term hit)", res.Trace[0].Signal)
-	}
-}
-
-// On equal hit counts the more recently active domain wins.
-func TestRoutedBlockLexicalTieBreaksOnRecency(t *testing.T) {
-	s := newStore(t)
-	older := mustDomain(t, s, store.CreateDomainParams{Name: "Older", Summary: "aged"})
-	newer := mustDomain(t, s, store.CreateDomainParams{Name: "Newer", Summary: "fresh"})
-	mustMemory(t, s, store.AddMemoryParams{DomainID: older.ID, Type: store.TypeFact, Text: "kestrel sighting one"})
-	mustMemory(t, s, store.AddMemoryParams{DomainID: newer.ID, Type: store.TypeFact, Text: "kestrel sighting two"})
-	ageDomain(t, s, older.ID)
-	mustTouch(t, s, newer.ID)
-
-	res, err := New(s, WithTopKDomains(1)).RoutedBlock(context.Background(),
-		RouteRequest{RouteText: "any kestrel news?", Trace: true})
-	if err != nil {
-		t.Fatalf("routed: %v", err)
-	}
-	if len(res.Loaded) != 1 || res.Loaded[0] != newer.ID {
-		t.Fatalf("tie should go to the more recent %s, got %v", newer.ID, res.Loaded)
-	}
-}
-
-// Event memories carry no lexical weight: a domain with five matching events
-// loses to a domain with one matching fact, even when the event domain is more
-// recent.
-func TestRoutedBlockLexicalIgnoresEvents(t *testing.T) {
-	s := newStore(t)
-	logs := mustDomain(t, s, store.CreateDomainParams{Name: "Logs", Summary: "trip log"})
-	facts := mustDomain(t, s, store.CreateDomainParams{Name: "Facts", Summary: "standing"})
-	for i := range 5 {
-		mustMemory(t, s, store.AddMemoryParams{DomainID: logs.ID, Type: store.TypeEvent, Text: fmt.Sprintf("kestrel seen on day %d", i)})
-	}
-	mustMemory(t, s, store.AddMemoryParams{DomainID: facts.ID, Type: store.TypeFact, Text: "The kestrel is a small falcon."})
-	ageDomain(t, s, facts.ID)
-	mustTouch(t, s, logs.ID) // Logs is more recent
-
-	res, err := New(s, WithTopKDomains(1)).RoutedBlock(context.Background(),
-		RouteRequest{RouteText: "kestrel", Trace: true})
-	if err != nil {
-		t.Fatalf("routed: %v", err)
-	}
-	if len(res.Loaded) != 1 || res.Loaded[0] != facts.ID {
-		t.Fatalf("fact domain %s should win; events must not score. got %v", facts.ID, res.Loaded)
-	}
-	if res.Trace[0].Signal != "match:kestrel" {
-		t.Fatalf("signal = %q, want match:kestrel", res.Trace[0].Signal)
-	}
-}
-
-func TestRoutedBlockSignalPriorityNoDuplicate(t *testing.T) {
-	s := newStore(t)
-	ctx := context.Background()
-	// One domain is tool-triggered AND lexically matched AND the most recent; it
-	// must appear exactly once and the strongest (tool) signal wins.
-	email := mustDomain(t, s, store.CreateDomainParams{
-		Name: "Email", Summary: "email handling", Triggers: "google_gmail",
-	})
-	mustTouch(t, s, email.ID)
-
-	c := New(s, WithTopKDomains(8))
-	res, err := c.RoutedBlock(ctx, RouteRequest{
-		RouteText:   "please check my email",
-		RecentTools: []string{"mcp__fusion__google_gmail_messages_list"},
-		Trace:       true,
-	})
-	if err != nil {
-		t.Fatalf("routed: %v", err)
-	}
-	if len(res.Loaded) != 1 || res.Loaded[0] != email.ID {
-		t.Fatalf("domain should appear exactly once, got %v", res.Loaded)
-	}
-	if n := strings.Count(res.Text, "("+email.ID+") — "); n != 1 {
-		t.Fatalf("domain rendered %d times, want 1:\n%s", n, res.Text)
-	}
-	if len(res.Trace) != 1 || res.Trace[0].Signal != "tool:google_gmail" {
-		t.Fatalf("tool signal should win over lexical/recency, got %+v", res.Trace)
-	}
-}
-
-func TestRouteTokensStopwordsAndLength(t *testing.T) {
-	got := routeTokens("What is the STATUS of the BioTech report, please?")
-	want := []string{"status", "biotech", "report"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("tokens = %v, want exactly %v in order", got, want)
-	}
-}
-
-// At most twelve salient terms are taken from a message, in order, deduped.
-func TestRouteTokensCappedAtTwelve(t *testing.T) {
-	words := []string{
-		"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
-		"india", "juliet", "kilo", "lima", "mike", "november", "oscar",
-	}
-	msg := strings.Join(words, " ") + " alpha bravo" // duplicates do not count twice
-	got := routeTokens(msg)
-	if len(got) != maxRouteTokens || maxRouteTokens != 12 {
-		t.Fatalf("tokens = %v (%d), want the first 12", got, len(got))
-	}
-	if strings.Join(got, ",") != strings.Join(words[:12], ",") {
-		t.Fatalf("tokens = %v, want %v", got, words[:12])
-	}
-}
-
 func TestRoutedBlockRecency(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
@@ -744,7 +594,6 @@ func TestRoutedBlockRecency(t *testing.T) {
 func TestRoutedBlockKeywordTrigger(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	// "Daily Ops" is named so it doesn't lexically collide with "morning".
 	wf := mustDomain(t, s, store.CreateDomainParams{
 		Name:            "Daily Ops",
 		KeywordTriggers: "morning routine",
@@ -774,8 +623,8 @@ func TestRoutedBlockKeywordTrigger(t *testing.T) {
 	ageDomain(t, s, wf.ID)
 	mustTouch(t, s, other.ID)
 
-	// Bare "morning" → no keyword (phrase-only) and no lexical hit on "Daily Ops";
-	// the more-recent Other takes the slot instead.
+	// Bare "morning" → no keyword (phrase-only); the more-recent Other takes the
+	// slot instead.
 	rr2, err := c.RoutedBlock(ctx, RouteRequest{RouteText: "good morning everyone"})
 	if err != nil {
 		t.Fatalf("routed: %v", err)
@@ -821,15 +670,330 @@ func TestRoutedBlockKeywordWordBoundary(t *testing.T) {
 // model can see why a domain was injected and adjust its trigger.
 func TestSignalReason(t *testing.T) {
 	for signal, want := range map[string]string{
-		"tool:google_gmail":     `loaded by tool trigger "google_gmail"`,
-		"keyword:release train": `loaded by keyword trigger "release train"`,
-		"match:invoice":         `loaded because the message matched "invoice"`,
-		"recency":               "loaded because it was recently active",
-		"other":                 "loaded by other",
+		"tool:google_gmail":             `loaded by tool trigger "google_gmail"`,
+		"keyword:release train":         `loaded by keyword trigger "release train"`,
+		"keyword:invoice,invoices,bill": `loaded by keyword triggers "invoice", "invoices", "bill"`,
+		"recent:release train":          `loaded by keyword trigger "release train" in a recent message`,
+		"recent:invoice,bill":           `loaded by keyword triggers "invoice", "bill" in a recent message`,
+		"recency":                       "loaded because it was recently active",
+		"match:invoice":                 "loaded by match:invoice", // lexical matching is gone
+		"other":                         "loaded by other",
 	} {
 		if got := signalReason(signal); got != want {
 			t.Errorf("signalReason(%q) = %q, want %q", signal, got, want)
 		}
+	}
+}
+
+// One domain matched by tool trigger, keyword trigger and recency at once
+// appears exactly once, under the strongest (tool) signal.
+func TestRoutedBlockSignalPriorityNoDuplicate(t *testing.T) {
+	s := newStore(t)
+	email := mustDomain(t, s, store.CreateDomainParams{
+		Name: "Email", Summary: "email handling", Triggers: "google_gmail", KeywordTriggers: "email",
+	})
+	mustTouch(t, s, email.ID)
+
+	res, err := New(s, WithTopKDomains(8)).RoutedBlock(context.Background(), RouteRequest{
+		RouteText:   "please check my email",
+		RecentTexts: []string{"email again"},
+		RecentTools: []string{"mcp__fusion__google_gmail_messages_list"},
+		Trace:       true,
+	})
+	if err != nil {
+		t.Fatalf("routed: %v", err)
+	}
+	if len(res.Loaded) != 1 || res.Loaded[0] != email.ID {
+		t.Fatalf("domain should appear exactly once, got %v", res.Loaded)
+	}
+	if n := strings.Count(res.Text, "("+email.ID+") — "); n != 1 {
+		t.Fatalf("domain rendered %d times, want 1:\n%s", n, res.Text)
+	}
+	if len(res.Trace) != 1 || res.Trace[0].Signal != "tool:google_gmail" {
+		t.Fatalf("tool signal should win over keyword/recency, got %+v", res.Trace)
+	}
+}
+
+// Lexical matching is gone: a message made of words that appear in domain
+// names, summaries and memory text loads nothing by content. Every slot is
+// recency filler, in recency order, and none of them is touched.
+func TestRoutedBlockNoLexicalLoading(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	bio := mustDomain(t, s, store.CreateDomainParams{Name: "BioTech", Summary: "research report"})
+	mustMemory(t, s, store.AddMemoryParams{DomainID: bio.ID, Type: store.TypeFact, Text: "The biotech report targets Q3."})
+	birds := mustDomain(t, s, store.CreateDomainParams{Name: "Raptors", Summary: "kestrel and falcon notes"})
+	mustMemory(t, s, store.AddMemoryParams{DomainID: birds.ID, Type: store.TypeFact, Text: "The kestrel hunts at dawn; the falcon nests on the tower."})
+	recent := mustDomain(t, s, store.CreateDomainParams{Name: "Unrelated", Summary: "misc"})
+	ageDomain(t, s, bio.ID)
+	ageDomain(t, s, birds.ID)
+	mustTouch(t, s, recent.ID)
+	before := map[string]int64{}
+	for _, id := range []string{bio.ID, birds.ID} {
+		d, _ := s.GetDomain(ctx, s.DB(), id, false)
+		before[id] = d.LastActiveAt
+	}
+
+	for _, tc := range []struct {
+		name string
+		topK int
+		text string
+	}{
+		{"one slot, memory words", 1, "what's the status of the biotech report targets?"},
+		{"one slot, name and summary words", 1, "raptors kestrel falcon notes research"},
+		{"all slots, every word", 8, "biotech report research raptors kestrel falcon hunts dawn tower notes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := New(s, WithTopKDomains(tc.topK)).RoutedBlock(ctx, RouteRequest{RouteText: tc.text, Trace: true})
+			if err != nil {
+				t.Fatalf("routed: %v", err)
+			}
+			if res.Loaded[0] != recent.ID {
+				t.Fatalf("most recent %s should take the first slot, got %v", recent.ID, res.Loaded)
+			}
+			if len(res.Loaded) != min(tc.topK, 3) {
+				t.Fatalf("loaded %v, want %d domains", res.Loaded, min(tc.topK, 3))
+			}
+			for _, sel := range res.Trace {
+				if sel.Signal != "recency" {
+					t.Fatalf("trace %+v: want only recency signals", res.Trace)
+				}
+			}
+		})
+	}
+	for id, was := range before {
+		if d, _ := s.GetDomain(ctx, s.DB(), id, false); d.LastActiveAt != was {
+			t.Errorf("domain %s was touched by a content-free route", id)
+		}
+	}
+}
+
+// A domain routes on its own keywords and on those consolidation added alike.
+func TestRoutedBlockKeywordUnion(t *testing.T) {
+	s := newStore(t)
+	d := mustDomain(t, s, store.CreateDomainParams{
+		Name: "Billing", KeywordTriggers: "invoice run", AutoKeywords: "accounts payable", BlockedKeywords: "billing cycle",
+	})
+	decoy := mustDomain(t, s, store.CreateDomainParams{Name: "Decoy"})
+	ageDomain(t, s, d.ID)
+	mustTouch(t, s, decoy.ID)
+
+	for _, tc := range []struct {
+		name, text, signal string
+	}{
+		{"agent keyword", "start the invoice run", "keyword:invoice run"},
+		{"consolidation keyword", "ask accounts payable", "keyword:accounts payable"},
+		{"both", "accounts payable owns the invoice run", "keyword:invoice run,accounts payable"},
+		{"blocked phrase does not route", "the billing cycle ends", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := New(s, WithTopKDomains(1)).RoutedBlock(context.Background(), RouteRequest{RouteText: tc.text, Trace: true})
+			if err != nil {
+				t.Fatalf("routed: %v", err)
+			}
+			if tc.signal == "" {
+				if res.Loaded[0] != decoy.ID {
+					t.Fatalf("loaded %v, want the recency decoy", res.Loaded)
+				}
+				return
+			}
+			if res.Loaded[0] != d.ID || res.Trace[0].Signal != tc.signal {
+				t.Fatalf("loaded %v trace %+v, want %s with %q", res.Loaded, res.Trace, d.ID, tc.signal)
+			}
+			ageDomain(t, s, d.ID) // keep the decoy the most recent for the next case
+		})
+	}
+}
+
+// keywordFixture creates topic domains in the given recency order (first is
+// the most recent) and returns their ids by name.
+func keywordFixture(t *testing.T, s *store.Store, domains []store.CreateDomainParams) map[string]string {
+	t.Helper()
+	ids := map[string]string{}
+	base := time.Now().Add(-time.Hour).Unix()
+	for i, p := range domains {
+		d := mustDomain(t, s, p)
+		ids[p.Name] = d.ID
+		if _, err := s.DB().ExecContext(context.Background(),
+			`UPDATE domains SET last_active_at=? WHERE id=?`, base-int64(i*60), d.ID); err != nil {
+			t.Fatalf("set recency: %v", err)
+		}
+	}
+	return ids
+}
+
+// Keyword matches are ranked by how many distinct phrases matched, most
+// first; recency breaks ties; tool triggers still come first; topK truncates
+// the ranked list.
+func TestRoutedBlockKeywordRanking(t *testing.T) {
+	// Recency order: Newest, Middle, Oldest, Tooled.
+	fixture := []store.CreateDomainParams{
+		{Name: "Newest", KeywordTriggers: "alpha"},
+		{Name: "Middle", KeywordTriggers: "beta"},
+		{Name: "Oldest", KeywordTriggers: "alpha,beta,gamma", AutoKeywords: "delta"},
+		{Name: "Tooled", Triggers: "zeta_tool"},
+		{Name: "Filler"},
+	}
+	for _, tc := range []struct {
+		name  string
+		topK  int
+		text  string
+		tools []string
+		want  []string // names, in order
+	}{
+		{"more phrases beat recency", 8, "alpha beta gamma", nil, []string{"Oldest", "Newest", "Middle", "Tooled", "Filler"}},
+		{"consolidation phrases count", 8, "beta delta", nil, []string{"Oldest", "Middle", "Newest", "Tooled", "Filler"}},
+		{"tie goes to the more recent", 8, "beta only", nil, []string{"Middle", "Oldest", "Newest", "Tooled", "Filler"}},
+		{"tool trigger first", 8, "alpha beta", []string{"mcp_zeta_tool_run"}, []string{"Tooled", "Oldest", "Newest", "Middle", "Filler"}},
+		{"topK truncates the ranking", 2, "alpha beta gamma", nil, []string{"Oldest", "Newest"}},
+		{"topK keeps tool then best keyword", 2, "alpha beta", []string{"zeta_tool"}, []string{"Tooled", "Oldest"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			ids := keywordFixture(t, s, fixture)
+			res, err := New(s, WithTopKDomains(tc.topK)).RoutedBlock(context.Background(),
+				RouteRequest{RouteText: tc.text, RecentTools: tc.tools, Trace: true})
+			if err != nil {
+				t.Fatalf("routed: %v", err)
+			}
+			var want []string
+			for _, n := range tc.want {
+				want = append(want, ids[n])
+			}
+			if strings.Join(res.Loaded, ",") != strings.Join(want, ",") {
+				t.Fatalf("loaded %v (trace %+v), want %v", res.Loaded, res.Trace, tc.want)
+			}
+		})
+	}
+}
+
+// The signal, the trace and the header name up to three matched phrases.
+func TestRoutedBlockKeywordSignalNamesPhrases(t *testing.T) {
+	s := newStore(t)
+	d := mustDomain(t, s, store.CreateDomainParams{Name: "Fleet", KeywordTriggers: "tail number,hangar,fuel order", AutoKeywords: "annual inspection"})
+	res, err := New(s).RoutedBlock(context.Background(), RouteRequest{
+		RouteText: "Hangar fuel order and annual inspection for the tail number", Trace: true,
+	})
+	if err != nil {
+		t.Fatalf("routed: %v", err)
+	}
+	if len(res.Trace) != 1 || res.Trace[0].Signal != "keyword:tail number,hangar,fuel order" {
+		t.Fatalf("trace = %+v, want the first three phrases", res.Trace)
+	}
+	header := "## Injected cogmem domain: Fleet (" + d.ID + `) — loaded by keyword triggers "tail number", "hangar", "fuel order"`
+	if res.Text != header {
+		t.Fatalf("routed text:\n%s\nwant header:\n%s", res.Text, header)
+	}
+}
+
+// Keywords also match the previous few messages. A domain matched in the
+// current message ranks ahead of one matched only earlier, whatever their
+// phrase counts or recency; the earlier-only match has its own signal and
+// header; both kinds touch the domain, recency filler does not.
+func TestRoutedBlockRecentTexts(t *testing.T) {
+	fixture := []store.CreateDomainParams{
+		{Name: "Earlier", KeywordTriggers: "kestrel,falcon"}, // most recent, two phrases
+		{Name: "Current", KeywordTriggers: "invoice run"},
+		{Name: "Filler"},
+	}
+	for _, tc := range []struct {
+		name    string
+		topK    int
+		text    string
+		earlier []string
+		want    []string
+		signals []string
+	}{
+		{
+			"current beats earlier", 8, "start the invoice run",
+			[]string{"saw a kestrel", "and a falcon"},
+			[]string{"Current", "Earlier", "Filler"},
+			[]string{"keyword:invoice run", "recent:kestrel,falcon", "recency"},
+		},
+		{
+			"topK keeps the current match", 1, "start the invoice run",
+			[]string{"kestrel and falcon"},
+			[]string{"Current"},
+			[]string{"keyword:invoice run"},
+		},
+		{
+			"current match ignores earlier texts", 8, "kestrel",
+			[]string{"falcon", "invoice run"},
+			[]string{"Earlier", "Current", "Filler"},
+			[]string{"keyword:kestrel", "recent:invoice run", "recency"},
+		},
+		{
+			"no earlier texts", 8, "nothing here", nil,
+			[]string{"Earlier", "Current", "Filler"},
+			[]string{"recency", "recency", "recency"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			ids := keywordFixture(t, s, fixture)
+			ctx := context.Background()
+			res, err := New(s, WithTopKDomains(tc.topK)).RoutedBlock(ctx,
+				RouteRequest{RouteText: tc.text, RecentTexts: tc.earlier, Trace: true})
+			if err != nil {
+				t.Fatalf("routed: %v", err)
+			}
+			var gotNames, gotSignals []string
+			for _, sel := range res.Trace {
+				gotNames = append(gotNames, sel.Name)
+				gotSignals = append(gotSignals, sel.Signal)
+			}
+			if strings.Join(gotNames, ",") != strings.Join(tc.want, ",") ||
+				strings.Join(gotSignals, "|") != strings.Join(tc.signals, "|") {
+				t.Fatalf("trace = %+v, want %v with %v", res.Trace, tc.want, tc.signals)
+			}
+			// Keyword matches (current or earlier) are touched; filler is not.
+			for _, sel := range res.Trace {
+				d, _ := s.GetDomain(ctx, s.DB(), ids[sel.Name], false)
+				touched := d.LastActiveAt > time.Now().Add(-time.Minute).Unix()
+				if touched != (sel.Signal != "recency") {
+					t.Errorf("%s (%s): touched=%v", sel.Name, sel.Signal, touched)
+				}
+			}
+		})
+	}
+}
+
+// Two domains matched only in earlier messages are ranked by distinct phrase
+// count across those messages, ahead of recency.
+func TestRoutedBlockRecentTextsRankByPhraseCount(t *testing.T) {
+	s := newStore(t)
+	keywordFixture(t, s, []store.CreateDomainParams{
+		{Name: "One", KeywordTriggers: "alpha"},       // most recent, one phrase
+		{Name: "Two", KeywordTriggers: "beta,gamma"},  // older, two phrases
+		{Name: "Tie", KeywordTriggers: "delta,alpha"}, // oldest, one phrase (alpha) seen
+	})
+	res, err := New(s, WithTopKDomains(8)).RoutedBlock(context.Background(), RouteRequest{
+		RouteText: "nothing here", RecentTexts: []string{"alpha and beta", "gamma alpha"}, Trace: true,
+	})
+	if err != nil {
+		t.Fatalf("routed: %v", err)
+	}
+	got := make([]string, 0, len(res.Trace))
+	for _, sel := range res.Trace {
+		got = append(got, sel.Name+"="+sel.Signal)
+	}
+	want := []string{"Two=recent:beta,gamma", "One=recent:alpha", "Tie=recent:alpha"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("trace = %v, want %v", got, want)
+	}
+}
+
+// A domain matched only in an earlier message says so in its header.
+func TestRoutedBlockRecentTextHeader(t *testing.T) {
+	s := newStore(t)
+	d := mustDomain(t, s, store.CreateDomainParams{Name: "Birds", KeywordTriggers: "kestrel"})
+	res, err := New(s).RoutedBlock(context.Background(), RouteRequest{RouteText: "and then?", RecentTexts: []string{"a kestrel"}})
+	if err != nil {
+		t.Fatalf("routed: %v", err)
+	}
+	want := "## Injected cogmem domain: Birds (" + d.ID + `) — loaded by keyword trigger "kestrel" in a recent message`
+	if !strings.HasPrefix(res.Text, want) {
+		t.Fatalf("routed text:\n%s\nwant prefix:\n%s", res.Text, want)
 	}
 }
 

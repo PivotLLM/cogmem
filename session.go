@@ -35,6 +35,10 @@ type Injection struct {
 // maxRecentTools bounds the recent-tool ring used for tool-trigger routing.
 const maxRecentTools = 8
 
+// maxRecentTexts is how many previous incoming messages keyword triggers are
+// also matched against, so a topic named a turn or two ago stays loaded.
+const maxRecentTexts = 3
+
 // SessionOptions describes one memory and how the host wants it driven.
 type SessionOptions struct {
 	// ID labels the memory in logs and run records; an agent id, typically.
@@ -84,6 +88,11 @@ type Session struct {
 
 	recentMu    sync.Mutex
 	recentTools []string
+	// recentTexts holds the distinct route texts of previous Recalls, newest
+	// first. It keeps one more than maxRecentTexts because the current text
+	// may already be in it (a repeated Recall), and earlierTexts leaves that
+	// one out yet should still find maxRecentTexts others.
+	recentTexts []string
 }
 
 // NewSession builds a session. The store is opened lazily on first use.
@@ -190,11 +199,50 @@ func (s *Session) RecentTools() []string {
 	return out
 }
 
+// earlierTexts returns up to maxRecentTexts previous route texts, newest first,
+// leaving out any entry equal to routeText: the same text again (a repeated
+// Recall for one message, or the user repeating themselves) is the current
+// message, not an earlier one.
+func (s *Session) earlierTexts(routeText string) []string {
+	s.recentMu.Lock()
+	defer s.recentMu.Unlock()
+	var out []string
+	for _, t := range s.recentTexts {
+		if t == routeText {
+			continue
+		}
+		out = append(out, t)
+		if len(out) == maxRecentTexts {
+			break
+		}
+	}
+	return out
+}
+
+// recordRouteText puts routeText at the front of the recent-text ring, moving
+// it there if it is already in the ring, so each text appears once. Blank text
+// is not recorded.
+func (s *Session) recordRouteText(routeText string) {
+	if strings.TrimSpace(routeText) == "" {
+		return
+	}
+	s.recentMu.Lock()
+	defer s.recentMu.Unlock()
+	ring := make([]string, 0, maxRecentTexts+1)
+	ring = append(ring, routeText)
+	for _, t := range s.recentTexts {
+		if t != routeText && len(ring) < maxRecentTexts+1 {
+			ring = append(ring, t)
+		}
+	}
+	s.recentTexts = ring
+}
+
 // Recall returns the blocks to place in the next request: the STABLE block
 // (sticky domains, topic index, their attached documents) for the system
-// message, and the ROUTED block (domains selected from routeText and the recent
-// tools, with their documents) for the current turn. Nil when there is nothing
-// to inject or the store could not be opened.
+// message, and the ROUTED block (domains selected from routeText, the previous
+// few route texts and the recent tools, with their documents) for the current
+// turn. Nil when there is nothing to inject or the store could not be opened.
 func (s *Session) Recall(ctx context.Context, routeText string) []Injection {
 	if s == nil || s.Store() == nil { //nolint:contextcheck // Store opens lazily with a background context by design (OnOpen must outlive this call); Store has no ctx parameter.
 		return nil
@@ -210,8 +258,11 @@ func (s *Session) Recall(ctx context.Context, routeText string) []Injection {
 	res, err := comp.Compose(ctx, RouteRequest{
 		RecentTools: s.RecentTools(),
 		RouteText:   routeText,
+		RecentTexts: s.earlierTexts(routeText),
 		Trace:       s.opt.Settings.Prompt.IncludeDebugTrace,
 	})
+	// After composing, so this message is an earlier one only from the next.
+	s.recordRouteText(routeText)
 	if err != nil {
 		logger.WarnCF("cogmem", "memory compose failed", map[string]any{
 			"id": s.opt.ID, "error": err.Error(),

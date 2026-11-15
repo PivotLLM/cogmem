@@ -8,8 +8,9 @@
 //     pending-confirmation digest, and the domain index. Cacheable; it carries
 //     the store's stable_rev so the caller invalidates only on change. The
 //     caller (the agent context layer) prepends the verbatim curated .md files.
-//   - RoutedBlock: the full state + active hooks of the most-recently-active
-//     domain(s), pre-loaded by recency. The only per-turn-varying memory.
+//   - RoutedBlock: the full state + active hooks of the topic domain(s) chosen
+//     for this turn — by tool trigger, then keyword trigger, then recency. The
+//     only per-turn-varying memory.
 package cogmem
 
 import (
@@ -17,7 +18,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/PivotLLM/cogmem/store"
 )
@@ -91,16 +91,21 @@ func New(st *store.Store, opts ...Option) *Composer {
 
 // RouteRequest carries the per-turn routing inputs.
 type RouteRequest struct {
-	RouteText   string   // latest user message (reserved for future signals)
+	RouteText   string   // latest incoming message, matched against keyword triggers
+	RecentTexts []string // previous incoming messages (newest-first); keyword matches here rank after RouteText's
 	RecentTools []string // recently-invoked tool names (newest-first) for tool-trigger activation
 	Trace       bool
 }
 
 // DomainSelection is one trace entry explaining a routed pre-load.
 type DomainSelection struct {
-	ID     string
-	Name   string
-	Signal string // "tool:<token>" (tool-trigger activation) or "recency"
+	ID   string
+	Name string
+	// Signal is "tool:<token>" (tool trigger), "keyword:<phrases>" (keyword
+	// triggers in the latest message), "recent:<phrases>" (keyword triggers in
+	// an earlier message only), or "recency" (filler). <phrases> names up to
+	// three matched phrases, comma-separated.
+	Signal string
 }
 
 // RoutedResult is the per-turn block plus optional trace.
@@ -193,8 +198,8 @@ func (c *Composer) stableBlock(ctx context.Context) (string, int64, []refSite, e
 	return out, rev, refs, nil
 }
 
-// RoutedBlock renders the most-recently-active topic domain(s), up to TopKDomains
-// and within MaxChars.
+// RoutedBlock renders the topic domain(s) chosen for this turn (tool triggers,
+// then keyword triggers, then recency), up to TopKDomains and within MaxChars.
 func (c *Composer) RoutedBlock(ctx context.Context, req RouteRequest) (RoutedResult, error) {
 	res, _, err := c.routedBlock(ctx, req)
 	return res, err
@@ -221,10 +226,11 @@ func (c *Composer) routedBlock(ctx context.Context, req RouteRequest) (RoutedRes
 	})
 
 	// Order the candidates by signal strength: (1) domains activated by a
-	// recently-used tool, (2) domains whose keyword_triggers appear in the latest
-	// message, (3) domains lexically matching the latest message, (4) the rest by
-	// recency. A single shared seen-set guarantees every domain appears at most
-	// once, so a domain matched by more than one signal is never duplicated.
+	// recently-used tool, (2) domains whose keyword triggers appear in the latest
+	// message, (3) domains whose keyword triggers appeared only in one of the
+	// previous few messages, (4) the rest by recency. A single shared seen-set
+	// guarantees every domain appears at most once, so a domain matched by more
+	// than one signal is never duplicated.
 	seen := make(map[string]bool, len(topics))
 	var ordered []candidate
 	for _, d := range topics {
@@ -233,21 +239,14 @@ func (c *Composer) routedBlock(ctx context.Context, req RouteRequest) (RoutedRes
 			ordered = append(ordered, candidate{d: d, signal: "tool:" + tok})
 		}
 	}
-	// Author-defined keyword triggers: activate when a phrase appears (whole-
-	// phrase, word-boundary) in the latest message — e.g. a workflow domain that
-	// should load when a cron message or user mentions "morning routine".
-	for _, d := range topics {
-		if seen[d.ID] {
-			continue
-		}
-		if kw, ok := d.MatchKeyword(req.RouteText); ok {
-			seen[d.ID] = true
-			ordered = append(ordered, candidate{d: d, signal: "keyword:" + kw})
-		}
-	}
-	for _, cand := range c.lexicalCandidates(ctx, topics, req.RouteText, seen) {
+	// Keyword triggers: activate when a phrase appears (whole-phrase, word-
+	// boundary) in the message — e.g. a workflow domain that should load when a
+	// cron message or the user mentions "morning routine".
+	current, earlier := keywordCandidates(topics, req, seen)
+	ordered = append(ordered, current...)
+	ordered = append(ordered, earlier...)
+	for _, cand := range ordered {
 		seen[cand.d.ID] = true
-		ordered = append(ordered, cand)
 	}
 	for _, d := range topics {
 		if !seen[d.ID] {
@@ -285,9 +284,10 @@ func (c *Composer) routedBlock(ctx context.Context, req RouteRequest) (RoutedRes
 		}
 		res.Loaded = append(res.Loaded, d.ID)
 		// Mark the domain active when it was loaded because it was genuinely
-		// relevant (a tool, keyword, or lexical match) — not when it was only
-		// filler chosen by recency itself, which would make the recency/staleness
-		// signal self-reinforcing and never let a domain go cold. Best-effort.
+		// relevant (a tool or keyword trigger, in this message or an earlier
+		// one) — not when it was only filler chosen by recency itself, which
+		// would make the recency/staleness signal self-reinforcing and never
+		// let a domain go cold. Best-effort.
 		if cand.signal != "recency" {
 			_ = c.st.Touch(ctx, db, d.ID)
 		}
@@ -348,7 +348,7 @@ func (c *Composer) Compose(ctx context.Context, req RouteRequest) (Result, error
 // candidate is one routed-block selection: a domain plus the signal that chose it.
 type candidate struct {
 	d      store.Domain
-	signal string // "tool:<token>", "match:<term>", or "recency"
+	signal string // "tool:<token>", "keyword:<phrases>", "recent:<phrases>", or "recency"
 }
 
 // matchAnyTool reports the first trigger token of d that matches any recently
@@ -365,104 +365,64 @@ func matchAnyTool(d store.Domain, recentTools []string) (string, bool) {
 	return "", false
 }
 
-// lexicalCandidates returns topic domains whose name, summary, or active hooks
-// contain a salient term from the latest user message, ordered by match count
-// (recency breaks ties). Domains already in `seen` (e.g. tool-triggered) are
-// skipped so the caller's dedup holds. Returns nil when routeText has no usable
-// terms — keeping behavior identical to before for empty/tool-result turns.
-func (c *Composer) lexicalCandidates(ctx context.Context, topics []store.Domain, routeText string, seen map[string]bool) []candidate {
-	terms := routeTokens(routeText)
-	if len(terms) == 0 {
-		return nil
+// keywordCandidates returns the topic domains (already in recency order) not in
+// seen whose keyword triggers match: current holds those matched in the latest
+// message, earlier those matched only in one of req.RecentTexts. Each group is
+// ordered by how many distinct phrases matched, most first, with recency
+// breaking ties. A domain in current is ranked on the latest message alone.
+func keywordCandidates(topics []store.Domain, req RouteRequest, seen map[string]bool) (current, earlier []candidate) {
+	type match struct {
+		cand    candidate
+		phrases int
 	}
-	db := c.st.DB()
-	// Restrict scoring to the routed topic set (general is handled in StableBlock).
-	inTopics := make(map[string]bool, len(topics))
+	var cur, prev []match
 	for _, d := range topics {
-		inTopics[d.ID] = true
-	}
-	type hit struct {
-		score int
-		term  string
-	}
-	hits := make(map[string]*hit)
-	bump := func(domainID, term string) {
-		if !inTopics[domainID] || seen[domainID] {
-			return
-		}
-		h := hits[domainID]
-		if h == nil {
-			h = &hit{term: term}
-			hits[domainID] = h
-		}
-		h.score++
-	}
-	for _, t := range terms {
-		// Memory-text matches via the indexed substring scan (returns DomainID).
-		// Events are excluded: routing decides which domain is relevant to the
-		// turn, and a domain full of trip logs would win on volume alone.
-		rows, err := c.st.SearchMemories(ctx, db, t, lexicalSearchLimit, false)
-		if err == nil {
-			for _, h := range rows {
-				bump(h.DomainID, t)
-			}
-		}
-		// Name / summary matches, scored in-memory over the topic set.
-		for _, d := range topics {
-			if strings.Contains(strings.ToLower(d.Name), t) || strings.Contains(strings.ToLower(d.Summary), t) {
-				bump(d.ID, t)
-			}
-		}
-	}
-	if len(hits) == 0 {
-		return nil
-	}
-	// Walk topics in recency order, keep those with a hit; stable-sort by score
-	// so a stronger lexical match wins, recency breaking ties.
-	var out []candidate
-	for _, d := range topics {
-		if h := hits[d.ID]; h != nil {
-			out = append(out, candidate{d: d, signal: "match:" + h.term})
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return hits[out[i].d.ID].score > hits[out[j].d.ID].score
-	})
-	return out
-}
-
-// routeTokens extracts salient, deduped lowercase terms from the user message for
-// lexical routing: alphanumeric runs of at least minRouteTokenLen, minus a small
-// stopword set, capped at maxRouteTokens.
-func routeTokens(s string) []string {
-	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	seen := make(map[string]bool, len(fields))
-	var out []string
-	for _, f := range fields {
-		if len(f) < minRouteTokenLen || routeStopwords[f] || seen[f] {
+		if seen[d.ID] {
 			continue
 		}
-		seen[f] = true
-		out = append(out, f)
-		if len(out) >= maxRouteTokens {
-			break
+		if p := d.MatchKeywords(req.RouteText); len(p) > 0 {
+			cur = append(cur, match{candidate{d: d, signal: "keyword:" + signalPhrases(p)}, len(p)})
+			continue
+		}
+		if p := matchRecentTexts(d, req.RecentTexts); len(p) > 0 {
+			prev = append(prev, match{candidate{d: d, signal: "recent:" + signalPhrases(p)}, len(p)})
+		}
+	}
+	rank := func(ms []match) []candidate {
+		sort.SliceStable(ms, func(i, j int) bool { return ms[i].phrases > ms[j].phrases })
+		out := make([]candidate, len(ms))
+		for i, m := range ms {
+			out[i] = m.cand
+		}
+		return out
+	}
+	return rank(cur), rank(prev)
+}
+
+// matchRecentTexts returns the distinct keyword phrases of d found in any of
+// texts, in first-seen order.
+func matchRecentTexts(d store.Domain, texts []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range texts {
+		for _, p := range d.MatchKeywords(t) {
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
 		}
 	}
 	return out
 }
 
-// routeStopwords are common 4+ char words excluded from lexical routing so they
-// don't pull in unrelated domains on ordinary phrasing.
-var routeStopwords = map[string]bool{
-	"what": true, "when": true, "where": true, "which": true, "this": true,
-	"that": true, "with": true, "have": true, "will": true, "from": true,
-	"they": true, "them": true, "then": true, "here": true, "there": true,
-	"about": true, "would": true, "could": true, "should": true, "please": true,
-	"need": true, "want": true, "like": true, "your": true, "ours": true,
-	"into": true, "just": true, "also": true, "make": true, "does": true,
-	"done": true, "been": true, "were": true, "than": true, "very": true,
+// signalPhrases joins up to maxSignalPhrases matched phrases for a signal.
+// Phrases never contain a comma (the store splits on it), so the join is
+// unambiguous.
+func signalPhrases(phrases []string) string {
+	if len(phrases) > maxSignalPhrases {
+		phrases = phrases[:maxSignalPhrases]
+	}
+	return strings.Join(phrases, ",")
 }
 
 // originSuffix tags a memory line with where it came from, so the assistant
@@ -531,14 +491,28 @@ func signalReason(signal string) string {
 	case "tool":
 		return fmt.Sprintf("loaded by tool trigger %q", value)
 	case "keyword":
-		return fmt.Sprintf("loaded by keyword trigger %q", value)
-	case "match":
-		return fmt.Sprintf("loaded because the message matched %q", value)
+		return "loaded by " + keywordTriggerList(value)
+	case "recent":
+		return "loaded by " + keywordTriggerList(value) + " in a recent message"
 	case "recency":
 		return "loaded because it was recently active"
 	default:
 		return "loaded by " + signal
 	}
+}
+
+// keywordTriggerList renders a signal's comma-joined phrases for a header:
+// `keyword trigger "a"` or `keyword triggers "a", "b"`.
+func keywordTriggerList(value string) string {
+	phrases := strings.Split(value, ",")
+	quoted := make([]string, len(phrases))
+	for i, p := range phrases {
+		quoted[i] = fmt.Sprintf("%q", p)
+	}
+	if len(quoted) == 1 {
+		return "keyword trigger " + quoted[0]
+	}
+	return "keyword triggers " + strings.Join(quoted, ", ")
 }
 
 func renderDomain(d store.Domain, hooks []store.Memory, events int, signal string) string {
