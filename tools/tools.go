@@ -121,7 +121,7 @@ func Definitions(h Host) []toolspec.ToolDefinition {
 				{Name: "set_next_actions", Type: "array", Items: "string", Required: false, Description: "Replace the next-actions list."},
 				{Name: "set_constraints", Type: "array", Items: "string", Required: false, Description: "Replace the constraints list."},
 				{Name: "set_triggers", Type: "string", Required: false, Description: "Replace tool triggers: comma-separated name fragments that auto-load this domain whenever you use a tool whose name contains one (substring, case-insensitive). E.g. \"mail,github\"; for an MCP server use its name (\"github\" matches mcp_github_*). Empty string clears."},
-				{Name: "set_keyword_triggers", Type: "array", Items: "string", Required: false, Description: "Replace keyword triggers: words/phrases that load this domain when they appear in the incoming message (whole-phrase, word-boundary). Prefer multi-word phrases like \"morning routine\" over common single words. Empty list clears."},
+				{Name: "set_keyword_triggers", Type: "array", Items: "string", Required: false, Description: "Replace keyword triggers: words/phrases that load this domain when they appear in the incoming message (whole-phrase, word-boundary). This is the full list domain_get shows, including keyword triggers added automatically; leave one out to remove it. Prefer multi-word phrases like \"morning routine\"; common words are rejected. Empty list clears."},
 			}, true, updateDomain),
 
 		def("memory_attach",
@@ -145,7 +145,7 @@ func Definitions(h Host) []toolspec.ToolDefinition {
 				{Name: "sticky", Type: "boolean", Required: false, Description: "true = always inject this domain into context every turn (use sparingly). Default false: loaded only when relevant."},
 				{Name: "summary", Type: "string", Required: false, Description: "Optional one-line summary."},
 				{Name: "triggers", Type: "string", Required: false, Description: "Optional tool triggers: comma-separated name fragments that auto-load this domain whenever you use a tool whose name contains one (substring, case-insensitive). E.g. \"mail,github\"; for an MCP server use its name (\"github\" matches mcp_github_*)."},
-				{Name: "keyword_triggers", Type: "array", Items: "string", Required: false, Description: "Optional keyword triggers: words/phrases that load this domain when they appear in the incoming message (whole-phrase, word-boundary). Prefer multi-word phrases like \"morning routine\". Use this to pull a workflow's context up when a cron job fires."},
+				{Name: "keyword_triggers", Type: "array", Items: "string", Required: false, Description: "Optional keyword triggers: words/phrases that load this domain when they appear in the incoming message (whole-phrase, word-boundary). Prefer multi-word phrases like \"morning routine\"; common words are rejected. Use this to pull a workflow's context up when a cron job fires."},
 			}, true, createDomain),
 
 		def("domain_archive",

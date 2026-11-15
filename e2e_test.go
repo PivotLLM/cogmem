@@ -223,7 +223,9 @@ func TestEndToEnd_ObserveConsolidateRecall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new domain: %v", err)
 	}
-	if deploy.Sticky() || deploy.Triggers != e2eToolTrigger || deploy.KeywordTriggers != e2eKeyword || deploy.Summary != e2eSummary {
+	// Consolidation's keywords land in its own list, never the agent's.
+	if deploy.Sticky() || deploy.Triggers != e2eToolTrigger || deploy.AutoKeywords != e2eKeyword ||
+		deploy.KeywordTriggers != "" || deploy.Summary != e2eSummary {
 		t.Fatalf("new domain = %+v", deploy)
 	}
 	topicMems, err := st.ListMemories(ctx, st.DB(), deploy.ID, store.StatusActive)
@@ -314,10 +316,21 @@ func TestEndToEnd_ObserveConsolidateRecall(t *testing.T) {
 	if nr != 1 || routed != wantKeyword {
 		t.Fatalf("keyword-triggered routed block (n=%d):\n%q\nwant:\n%q", nr, routed, wantKeyword)
 	}
-	ageDomain(t, st, deploy.ID) // the keyword match touched it too
+	// (d) The phrase keeps the domain loaded for the next few messages, then
+	// it goes.
+	wantEarlier := strings.Replace(wantKeyword, "\""+e2eKeyword+"\"", "\""+e2eKeyword+"\" in a recent message", 1)
+	for i := range maxRecentTexts {
+		ageDomain(t, st, deploy.ID) // each keyword match touches it
+		mustTouch(t, st, decoy.ID)
+		routed, _ = injectionText(fresh.Recall(ctx, fmt.Sprintf("hello again %d", i)), PlaceCurrentUser)
+		if routed != wantEarlier {
+			t.Fatalf("message %d after the phrase: routed block\n%q\nwant:\n%q", i+1, routed, wantEarlier)
+		}
+	}
+	ageDomain(t, st, deploy.ID)
 	mustTouch(t, st, decoy.ID)
-	routed, _ = injectionText(fresh.Recall(ctx, "hello again"), PlaceCurrentUser)
+	routed, _ = injectionText(fresh.Recall(ctx, "hello once more"), PlaceCurrentUser)
 	if strings.Contains(routed, e2eTopicMemory) {
-		t.Fatalf("without the phrase the new domain must not route:\n%s", routed)
+		t.Fatalf("once the phrase is out of the recent messages the new domain must not route:\n%s", routed)
 	}
 }

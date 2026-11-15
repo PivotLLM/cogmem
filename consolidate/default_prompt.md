@@ -61,7 +61,7 @@ add / supersede / retire; or do nothing.
   every turn; use it for global rules, preferences, and standing facts that should
   ALWAYS apply. The pre-existing sticky `General` domain holds these — add such
   memories there; do not create another sticky global domain. Non-sticky (topic)
-  domains are loaded only when relevant (by recency, lexical match, or triggers);
+  domains are loaded only when relevant (by tool or keyword triggers, or recency);
   use them for distinct ongoing topics/projects. Set `sticky` sparingly.
 - Register each clearly distinct ongoing project/topic as its own (non-sticky)
   domain (with a `tmp_id`), so the assistant's project list stays complete. Keep
@@ -76,15 +76,21 @@ add / supersede / retire; or do nothing.
   `github` matches every tool from the github server. The domain is then
   auto-loaded whenever a matching tool is used again. Omit when no tool clearly
   maps to the domain.
-- Keyword triggers (optional): set `keyword_triggers` to a comma-separated list of
-  distinctive words/phrases that should load this domain when one appears in an
-  incoming message (e.g. a recurring workflow that fires on a schedule, or a topic
-  the user names). Matched as a whole phrase on word boundaries, so prefer
-  multi-word phrases (`morning routine,weekly report`) over common single words
-  like `morning` that would match too often. Unlike `triggers` (which match tool
-  names), these match the message text. Omit when nothing clearly applies.
+- Keyword triggers: a topic (non-sticky) domain loads only when one of its
+  keywords appears in an incoming message, so maintain `keyword_triggers` for
+  EVERY topic domain: a comma-separated list of distinctive names, terms and
+  paraphrases, and the words a user would actually say when the domain is
+  relevant, even if its memories use different vocabulary. Matching is exact,
+  whole-phrase and case-insensitive, so include plural/singular and spelling
+  variants (`invoice,invoices`). Prefer multi-word phrases (`morning routine`);
+  never common words (`today`, `good`, `morning`) — they are discarded. This
+  list is yours: an update replaces it, so send the whole list when you extend
+  or prune it, and omit it to leave it unchanged. `agent_keyword_triggers` are
+  the assistant's own and also match; they are read-only — do not repeat them.
+  Never propose a phrase in `blocked_keywords`: the assistant removed those.
 - Every operation MUST cite `evidence` — the seq range in `new_messages` that
-  justifies it. No evidence → omit the op.
+  justifies it. No evidence → omit the op. Exception: a domain `update` that
+  sets only `keyword_triggers` may omit it.
 
 # CORE RULES
 1. De-duplicate: if already in `curated` or `current_state`, do nothing.

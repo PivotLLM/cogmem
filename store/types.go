@@ -104,7 +104,9 @@ type Domain struct {
 	SchemaVersion   int
 	LastActiveAt    int64  // unix seconds; recency/last-used signal (0 = never recorded)
 	Triggers        string // comma-delimited tool-name substrings; activates this domain when a matching tool is used (see TriggerTokens)
-	KeywordTriggers string // comma-delimited phrases; activates this domain when one appears (whole-phrase, word-boundary) in the message text (see KeywordPhrases)
+	KeywordTriggers string // comma-delimited phrases owned by the agent/operator; activates this domain when one appears (whole-phrase, word-boundary) in the message text (see KeywordPhrases)
+	AutoKeywords    string // comma-delimited phrases owned by consolidation; matched like KeywordTriggers
+	BlockedKeywords string // comma-delimited phrases the agent removed from AutoKeywords; consolidation may never add them back
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	ArchivedAt      *time.Time

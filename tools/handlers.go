@@ -6,6 +6,7 @@
 package tools
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -195,6 +196,9 @@ func getDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	}
 	if d.KeywordTriggers != "" {
 		fmt.Fprintf(&b, "Keyword triggers (auto-load when mentioned): %s\n", d.KeywordTriggers)
+	}
+	if d.AutoKeywords != "" {
+		fmt.Fprintf(&b, "Keyword triggers added automatically: %s\n", d.AutoKeywords)
 	}
 	writeStateLine(&b, "Blockers", d.State.Blockers)
 	writeStateLine(&b, "Next actions", d.State.NextActions)
@@ -505,25 +509,52 @@ func updateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 		v := argStr(call, "set_triggers")
 		p.Triggers = &v
 	}
-	// set_keyword_triggers present (even empty) replaces the keyword list.
-	kw, ok, err := argStrSlice(call, "set_keyword_triggers")
+	// set_keyword_triggers present (even empty) replaces the keyword list the
+	// agent sees: its own phrases plus those consolidation added (see
+	// store.KeywordPatch).
+	kw, setKeywords, err := argStrSlice(call, "set_keyword_triggers")
 	if err != nil {
 		return "", err
 	}
-	if ok {
-		v := strings.Join(kw, ",")
-		p.KeywordTriggers = &v
-	}
-	if p.Name == nil && p.Summary == nil && p.State == nil && p.Triggers == nil && p.KeywordTriggers == nil && p.Sticky == nil {
+	otherFields := p.Name != nil || p.Summary != nil || p.State != nil || p.Triggers != nil || p.Sticky != nil
+	if !otherFields && !setKeywords {
 		return "", errors.New("nothing to update (set_name, set_summary, set_sticky, set_triggers, set_keyword_triggers, or a list field)")
 	}
-	if err := s.UpdateDomain(call.Ctx, s.DB(), id, p); err != nil {
+	// One transaction and one UpdateDomain, so the keyword check sees the
+	// state it changes and the call bumps the version once.
+	var rejected []store.KeywordRejection
+	err = s.WithTx(call.Ctx, func(tx *sql.Tx) error {
+		if setKeywords {
+			kp, rej, kerr := s.KeywordPatch(call.Ctx, tx, id, kw)
+			if kerr != nil {
+				return kerr
+			}
+			rejected = rej
+			p.KeywordTriggers, p.AutoKeywords, p.BlockedKeywords = kp.KeywordTriggers, kp.AutoKeywords, kp.BlockedKeywords
+		}
+		return s.UpdateDomain(call.Ctx, tx, id, p)
+	})
+	if err != nil {
 		if errors.Is(err, store.ErrDuplicateName) {
 			return "", errors.New("a domain named that already exists — pick a unique name")
 		}
 		return "", mapErr(err, id)
 	}
-	return fmt.Sprintf("Updated domain %s.", id), nil
+	return fmt.Sprintf("Updated domain %s.", id) + rejectedKeywordsNote(rejected), nil
+}
+
+// rejectedKeywordsNote names the keyword phrases that were refused, e.g.
+// ` Not added: "today" (too common), "invoice" (already used by 3 domains).`
+// Empty when none were.
+func rejectedKeywordsNote(rejected []store.KeywordRejection) string {
+	if len(rejected) == 0 {
+		return ""
+	}
+	parts := make([]string, len(rejected))
+	for i, r := range rejected {
+		parts[i] = fmt.Sprintf("%q (%s)", r.Phrase, r.Reason)
+	}
+	return " Not added: " + strings.Join(parts, ", ") + "."
 }
 
 // exportMemory writes the agent's entire active memory as one Markdown document
@@ -613,13 +644,24 @@ func createDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	d, err := s.CreateDomain(call.Ctx, s.DB(), store.CreateDomainParams{
-		Sticky:          sticky,
-		Name:            name,
-		Status:          store.StatusActive,
-		Summary:         argStr(call, "summary"),
-		Triggers:        argStr(call, "triggers"),
-		KeywordTriggers: strings.Join(kw, ","),
+	var d store.Domain
+	var rejected []store.KeywordRejection
+	err = s.WithTx(call.Ctx, func(tx *sql.Tx) error {
+		accepted, rej, cerr := s.CheckKeywords(call.Ctx, tx, "", kw)
+		if cerr != nil {
+			return cerr
+		}
+		rejected = rej
+		var derr error
+		d, derr = s.CreateDomain(call.Ctx, tx, store.CreateDomainParams{
+			Sticky:          sticky,
+			Name:            name,
+			Status:          store.StatusActive,
+			Summary:         argStr(call, "summary"),
+			Triggers:        argStr(call, "triggers"),
+			KeywordTriggers: strings.Join(accepted, ","),
+		})
+		return derr
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrDuplicateName) {
@@ -627,7 +669,7 @@ func createDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {
 		}
 		return "", err
 	}
-	return fmt.Sprintf("Created domain %s (name=%q, sticky=%t).", d.ID, d.Name, d.Sticky()), nil
+	return fmt.Sprintf("Created domain %s (name=%q, sticky=%t).", d.ID, d.Name, d.Sticky()) + rejectedKeywordsNote(rejected), nil
 }
 
 func migrateDomain(s *store.Store, call *toolspec.ToolCall) (string, error) {

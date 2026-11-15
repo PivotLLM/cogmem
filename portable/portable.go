@@ -50,7 +50,9 @@ type Domain struct {
 	Status          string   `yaml:"status"`
 	Summary         string   `yaml:"summary,omitempty"`
 	Triggers        string   `yaml:"triggers,omitempty"`
-	KeywordTriggers string   `yaml:"keyword_triggers,omitempty"`
+	KeywordTriggers string   `yaml:"keyword_triggers,omitempty"` // the agent's own
+	AutoKeywords    string   `yaml:"auto_keywords,omitempty"`    // added by consolidation
+	BlockedKeywords string   `yaml:"blocked_keywords,omitempty"` // consolidation may not add these back
 	Blockers        []string `yaml:"blockers,omitempty"`
 	NextActions     []string `yaml:"next_actions,omitempty"`
 	Constraints     []string `yaml:"constraints,omitempty"`
@@ -135,6 +137,8 @@ func Export(ctx context.Context, st *store.Store) (Document, error) {
 			Summary:         d.Summary,
 			Triggers:        d.Triggers,
 			KeywordTriggers: d.KeywordTriggers,
+			AutoKeywords:    d.AutoKeywords,
+			BlockedKeywords: d.BlockedKeywords,
 			Blockers:        d.State.Blockers,
 			NextActions:     d.State.NextActions,
 			Constraints:     d.State.Constraints,
@@ -278,6 +282,8 @@ func Import(ctx context.Context, st *store.Store, doc Document, mode ImportMode)
 				},
 				Triggers:        d.Triggers,
 				KeywordTriggers: d.KeywordTriggers,
+				AutoKeywords:    d.AutoKeywords,
+				BlockedKeywords: d.BlockedKeywords,
 			})
 			if err != nil {
 				return res, fmt.Errorf("cogmem: import: create domain %q: %w", name, err)
@@ -362,12 +368,21 @@ func domainPatch(cur store.Domain, d Domain) (store.UpdateDomainParams, bool) {
 	if st := domainStatus(d.Status); cur.Status != st {
 		p.Status, changed = &st, true
 	}
-	want := store.Domain{Triggers: d.Triggers, KeywordTriggers: d.KeywordTriggers}
+	want := store.Domain{
+		Triggers: d.Triggers, KeywordTriggers: d.KeywordTriggers,
+		AutoKeywords: d.AutoKeywords, BlockedKeywords: d.BlockedKeywords,
+	}
 	if !equalStrings(cur.TriggerTokens(), want.TriggerTokens()) {
 		p.Triggers, changed = &d.Triggers, true
 	}
-	if !equalStrings(cur.KeywordPhrases(), want.KeywordPhrases()) {
+	if !equalStrings(cur.AgentKeywordPhrases(), want.AgentKeywordPhrases()) {
 		p.KeywordTriggers, changed = &d.KeywordTriggers, true
+	}
+	if !equalStrings(cur.AutoKeywordPhrases(), want.AutoKeywordPhrases()) {
+		p.AutoKeywords, changed = &d.AutoKeywords, true
+	}
+	if !equalStrings(cur.BlockedKeywordPhrases(), want.BlockedKeywordPhrases()) {
+		p.BlockedKeywords, changed = &d.BlockedKeywords, true
 	}
 	if !equalStrings(cur.State.Blockers, d.Blockers) ||
 		!equalStrings(cur.State.NextActions, d.NextActions) ||

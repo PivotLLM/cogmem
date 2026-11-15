@@ -18,13 +18,9 @@ const (
 	defaultFileTotalMaxBytes = 512 * 1024
 )
 
-// Lexical-routing tuning (RoutedBlock matches the latest user message against
-// domain name/summary/hooks to auto-load relevant topics — see lexicalCandidates).
-const (
-	minRouteTokenLen   = 4  // ignore shorter tokens (the, and, you, ...)
-	maxRouteTokens     = 12 // cap salient terms taken from one message
-	lexicalSearchLimit = 50 // max hooks scanned per term via SearchMemories
-)
+// maxSignalPhrases caps how many matched keyword phrases a routing signal (and
+// so the trace and the injected header) names.
+const maxSignalPhrases = 3
 
 // maxHeadlineChars caps the memory text quoted in an attached document's header.
 const maxHeadlineChars = 120

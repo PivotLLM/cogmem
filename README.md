@@ -49,21 +49,24 @@ two blocks for different placements to assist with prompt caching economics:
 
   1. **Tool triggers.** A domain whose trigger matches a tool used in
      this turn. Using `mcp_github_*` loads any domain that declared `github`.
-  2. **Keyword triggers.** A domain whose declared phrase appears in the
-     incoming message, including a scheduled (cron) message: "morning
-     routine" loads the workflow domain that asked for it.
-  3. **Lexical match.** Salient terms are taken from the message (runs of
-     letters and digits of at least four characters, a small stopword list
-     removed, at most twelve terms) and matched, case-insensitively, against
-     memory text through the store's indexed substring search and against
-     domain names and summaries. Domains are scored by hit count; recency
-     breaks ties. Event memories are excluded from this scoring so a domain
-     full of trip logs cannot win on volume.
-  4. **Recency.** Remaining slots are filled with the most recently active
+  2. **Keyword triggers.** A domain whose keyword phrase appears (whole
+     phrase, case-insensitive) in the incoming message, including a scheduled
+     (cron) message: "morning routine" loads the workflow domain that asked
+     for it. Domains matching more distinct phrases rank first; recency breaks
+     ties. Keywords are also matched against the previous three incoming
+     messages, so a topic named a moment ago stays loaded; those matches rank
+     after matches in the current message.
+  3. **Recency.** Remaining slots are filled with the most recently active
      topics.
 
-A domain appears at most once even when several signals pick it. A domain 
-loaded by a real signal (tool, keyword, lexical) is marked active; one loaded
+A domain's keywords come from two places: the assistant sets its own, and
+consolidation maintains a list for every topic domain. The assistant sees and
+edits them as one list; a keyword it removes from consolidation's list is
+never added back. Common words ("today", "good morning") and phrases already
+used by three other domains are rejected.
+
+A domain appears at most once even when several signals pick it. A domain
+loaded by a real signal (tool or keyword) is marked active; one loaded
 only as recency filler is not, so the recency signal cannot reinforce
 itself and a topic can go cold.
 
@@ -123,8 +126,8 @@ a per-agent `COGMEM.md` allows adding agent-specific instructions.
 
 ### What cogmem is not
 
-Cogmem is lexical and deterministic. It does not rely on embeddings, vectors,
-or a full-text engine.
+Cogmem routes by triggers and is deterministic. It does not rely on
+embeddings, vectors, or a full-text engine.
 
 A domain, not a chunk, is the unit of retrieval, and the assistant can see and
 edit the triggers that drive it. The assistant can also create domains as requried.

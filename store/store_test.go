@@ -673,18 +673,18 @@ func TestDomainKeywordTriggers(t *testing.T) {
 	}
 
 	// Whole-phrase, word-boundary, case-insensitive matches.
-	if kw, ok := d.MatchKeyword("Time for the MORNING ROUTINE, everyone"); !ok || kw != "morning routine" {
-		t.Fatalf("MatchKeyword phrase = %q,%v", kw, ok)
+	if kw := d.MatchKeywords("Time for the MORNING ROUTINE, everyone"); len(kw) != 1 || kw[0] != "morning routine" {
+		t.Fatalf("MatchKeywords = %q", kw)
 	}
-	if _, ok := d.MatchKeyword("please file the weekly report by noon"); !ok {
+	if kw := d.MatchKeywords("please file the weekly report by noon"); len(kw) != 1 {
 		t.Fatalf("expected 'weekly report' to match")
 	}
 	// The individual words must NOT match on their own (phrase only).
-	if _, ok := d.MatchKeyword("good morning"); ok {
+	if kw := d.MatchKeywords("good morning"); kw != nil {
 		t.Fatalf("bare 'morning' should not match the phrase 'morning routine'")
 	}
 	// No substring-in-word false positives.
-	if _, ok := d.MatchKeyword("this is legitimate work"); ok {
+	if kw := d.MatchKeywords("this is legitimate work"); kw != nil {
 		t.Fatalf("should not match inside another word")
 	}
 
