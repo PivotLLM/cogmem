@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -630,5 +631,46 @@ func TestNextNightlyJitterStaysInWindow(t *testing.T) {
 		if got.Before(base) || !got.Before(base.Add(jitter)) {
 			t.Fatalf("nextNightly = %v, want within [%v, %v)", got, base, base.Add(jitter))
 		}
+	}
+}
+
+// The "run finished" line carries the dropped keywords only when there are any.
+func TestRunJobLogsDroppedKeywords(t *testing.T) {
+	tests := []struct {
+		name      string
+		keywords  string
+		wantCount any
+		wantList  any
+	}{
+		{"dropped", "today,flight booking", 1, `travel "today" (too common)`},
+		{"none dropped", "flight booking", nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := installCapture(t)
+			dir := t.TempDir()
+			s := openDirStore(t, dir)
+			d, err := s.CreateDomain(context.Background(), s.DB(), store.CreateDomainParams{Name: "travel"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedInbox(t, s, sampleMessages())
+			model := &fakeModel{raw: fmt.Sprintf(`{"domain_ops":[{"op":"update","id":%q,"keyword_triggers":%q,"evidence":{"seq_start":1,"seq_end":2}}],"memory_ops":[],"conflict_ledger":[]}`, d.ID, tt.keywords)}
+			m := NewManager(func(Job) (*Worker, error) { return NewWorker(s, model), nil })
+			m.Start(context.Background())
+			m.Enqueue(Job{ID: "a", Dir: dir}, "manual")
+			e := logs.wait(t, "consolidation run finished")
+			m.Stop()
+
+			if e.fields["status"] != "ok" {
+				t.Fatalf("status = %v, want ok", e.fields["status"])
+			}
+			if got := e.fields["dropped_keywords"]; got != tt.wantCount {
+				t.Errorf("dropped_keywords = %v, want %v", got, tt.wantCount)
+			}
+			if got := e.fields["dropped_keyword_list"]; got != tt.wantList {
+				t.Errorf("dropped_keyword_list = %v, want %v", got, tt.wantList)
+			}
+		})
 	}
 }

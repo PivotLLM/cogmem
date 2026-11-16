@@ -263,7 +263,7 @@ func TestApplyKeywordOwnership(t *testing.T) {
 			}
 			var want []DroppedKeyword
 			for _, w := range tc.wantDropped {
-				w.DomainID = d.ID
+				w.DomainID, w.DomainName = d.ID, "Target"
 				want = append(want, w)
 			}
 			if !reflect.DeepEqual(res.DroppedKeywords, want) {
@@ -336,7 +336,7 @@ func TestApplyKeywordOnlyUpdateWithoutEvidence(t *testing.T) {
 	}
 }
 
-// On create, generic phrases are dropped and reported against the new id.
+// On create, generic phrases are dropped and reported against the new id and name.
 func TestApplyCreateDropsGenericKeywords(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
@@ -352,7 +352,7 @@ func TestApplyCreateDropsGenericKeywords(t *testing.T) {
 	if d.AutoKeywords != "kestrel" || d.KeywordTriggers != "" || d.BlockedKeywords != "" {
 		t.Fatalf("domain = %+v", d)
 	}
-	want := []DroppedKeyword{{DomainID: d.ID, Phrase: "thanks", Reason: "too common"}}
+	want := []DroppedKeyword{{DomainID: d.ID, DomainName: "Birds", Phrase: "thanks", Reason: "too common"}}
 	if !reflect.DeepEqual(res.DroppedKeywords, want) {
 		t.Fatalf("dropped = %+v, want %+v", res.DroppedKeywords, want)
 	}

@@ -180,6 +180,8 @@ type RunResult struct {
 	Status   string // busy, idle, ok, error, invalid_json, aborted
 	SeqStart int64
 	SeqEnd   int64
+	// DroppedKeywords are the keyword phrases Apply refused on an ok run.
+	DroppedKeywords []DroppedKeyword
 }
 
 // leaseName guards a store against two concurrent runs. One store, one lease.
@@ -336,7 +338,7 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 		notes = append(notes, "auto-repaired: "+strings.Join(repairs, "; "))
 	}
 	if len(applyRes.DroppedKeywords) > 0 {
-		notes = append(notes, droppedKeywordsNote(applyRes.DroppedKeywords))
+		notes = append(notes, "keywords not added: "+droppedKeywordsText(applyRes.DroppedKeywords, 0))
 	}
 	runNote := strings.Join(notes, "; ")
 	w.recordRun(ctx, p, model, "ok", applied, consolidated+1, lastSeq, inputTokens, outputTokens, drainErr, runNote, started)
@@ -344,17 +346,40 @@ func (w *Worker) RunOnce(ctx context.Context, p RunParams) (RunResult, error) {
 
 	result.Applied = applied
 	result.Status = "ok"
+	result.DroppedKeywords = applyRes.DroppedKeywords
 	return result, nil
 }
 
-// droppedKeywordsNote renders dropped keywords for the run note, e.g.
-// `keywords not added: d7 "today" (too common)`.
-func droppedKeywordsNote(dropped []DroppedKeyword) string {
-	parts := make([]string, len(dropped))
-	for i, d := range dropped {
-		parts[i] = fmt.Sprintf("%s %q (%s)", d.DomainID, d.Phrase, d.Reason)
+// droppedKeywordsText renders dropped keywords for an operator, naming each
+// domain by name, e.g. `travel "today" (too common), "home office" "desk"
+// (already used by 3 domains)`. limit > 0 lists at most that many and ends
+// with "and N more"; 0 lists all.
+func droppedKeywordsText(dropped []DroppedKeyword, limit int) string {
+	shown := dropped
+	if limit > 0 && len(dropped) > limit {
+		shown = dropped[:limit]
 	}
-	return "keywords not added: " + strings.Join(parts, ", ")
+	parts := make([]string, len(shown), len(shown)+1)
+	for i, d := range shown {
+		parts[i] = fmt.Sprintf("%s %q (%s)", domainLabel(d.DomainName, d.DomainID), d.Phrase, d.Reason)
+	}
+	if more := len(dropped) - len(shown); more > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more", more))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// domainLabel names a domain for an operator: its name, quoted when it has
+// spaces or characters that would blur the message, or its ID when the name
+// is unknown.
+func domainLabel(name, id string) string {
+	if name == "" {
+		return id
+	}
+	if strings.ContainsAny(name, " \t\n\",()") {
+		return fmt.Sprintf("%q", name)
+	}
+	return name
 }
 
 // callModel asks the host for a reply and validates it as a consolidation
