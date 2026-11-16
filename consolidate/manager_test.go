@@ -201,7 +201,7 @@ func TestRunJobDrainsInboxThroughRealWorker(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, PromptFilename), []byte(instructions), 0o600); err != nil {
 		t.Fatalf("write COGMEM.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(ws, "USER.md"), []byte("The user is Eric."), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(ws, "USER.md"), []byte("The user is Alice."), 0o600); err != nil {
 		t.Fatalf("write USER.md: %v", err)
 	}
 	s := openDirStore(t, dir)
@@ -264,7 +264,7 @@ func TestRunJobDrainsInboxThroughRealWorker(t *testing.T) {
 		if err := json.Unmarshal([]byte(req.User), &in); err != nil {
 			t.Fatalf("request %d: user payload is not an Input: %v", i, err)
 		}
-		if in.Curated.UserMD != "The user is Eric." {
+		if in.Curated.UserMD != "The user is Alice." {
 			t.Errorf("request %d: USER.md = %q, want the workspace file", i, in.Curated.UserMD)
 		}
 		if len(in.NewMessages) != 1 || in.NewMessages[0] != msgs[i] {

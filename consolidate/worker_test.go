@@ -151,7 +151,7 @@ func seedDomain(t *testing.T, s *store.Store) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{
-		Name: "ClawEh", Status: store.StatusActive,
+		Name: "Gateway", Status: store.StatusActive,
 		Summary: "Go gateway project",
 	})
 	if err != nil {
@@ -364,7 +364,7 @@ func TestRunOnceHappyPath(t *testing.T) {
 		t.Errorf("curated = %+v, want empty for a missing workspace", in.Curated)
 	}
 	dv := domainView(t, in, domainID)
-	if dv.Name != "ClawEh" || dv.Status != "active" || dv.Summary != "Go gateway project" {
+	if dv.Name != "Gateway" || dv.Status != "active" || dv.Summary != "Go gateway project" {
 		t.Errorf("domain view = %+v", dv)
 	}
 	if len(dv.Memories) != 1 || dv.Memories[0].ID != memoryID || dv.Memories[0].Type != "rule" ||
@@ -431,7 +431,7 @@ func TestRunOnceSendsWorkspaceToModel(t *testing.T) {
 	files := map[string]string{
 		PromptFilename: instructions,
 		"AGENTS.md":    "agents body",
-		"USER.md":      "The user is Eric.",
+		"USER.md":      "The user is Alice.",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(ws, name), []byte(body), 0o600); err != nil {
@@ -460,7 +460,7 @@ func TestRunOnceSendsWorkspaceToModel(t *testing.T) {
 		t.Error("system prompt is not BuildPrompt of the workspace COGMEM.md")
 	}
 	in := decodeInput(t, req)
-	want := Curated{AgentsMD: "agents body", UserMD: "The user is Eric."}
+	want := Curated{AgentsMD: "agents body", UserMD: "The user is Alice."}
 	if in.Curated != want {
 		t.Errorf("curated = %+v, want %+v", in.Curated, want)
 	}
@@ -766,7 +766,7 @@ func TestRunOnceApplyFailureRecordsError(t *testing.T) {
 		t.Fatalf("list domains: %v", err)
 	}
 
-	raw := `{"domain_ops":[{"op":"create","tmp_id":"t1","name":"ClawEh","summary":"a second one","evidence":{"seq_start":1,"seq_end":2}}],"memory_ops":[],"conflict_ledger":[]}`
+	raw := `{"domain_ops":[{"op":"create","tmp_id":"t1","name":"Gateway","summary":"a second one","evidence":{"seq_start":1,"seq_end":2}}],"memory_ops":[],"conflict_ledger":[]}`
 	w := NewWorker(s, &fakeModel{raw: raw})
 	res, err := w.RunOnce(ctx, params())
 	if err == nil || !errors.Is(err, store.ErrDuplicateName) {

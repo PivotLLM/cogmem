@@ -426,7 +426,7 @@ func TestApplyUpdateDomainAllFields(t *testing.T) {
 		Blockers:    []string{"waiting on legal"},
 		NextActions: []string{"ship v2"},
 		Constraints: []string{"no new deps"},
-		Fields:      map[string]any{"owner": "eric"},
+		Fields:      map[string]any{"owner": "alice"},
 	}
 	out := Output{DomainOps: []DomainOp{{
 		Op: "update", ID: d.ID,

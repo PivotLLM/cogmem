@@ -783,7 +783,7 @@ func TestImportReMintsIDs(t *testing.T) {
 }
 
 // A file that is not a memory export is rejected rather than silently importing
-// nothing, and a document from a future ClawEh says so instead of dropping the
+// nothing, and a document from a future version says so instead of dropping the
 // fields it does not understand.
 func TestUnmarshalRejectsWhatItCannotRead(t *testing.T) {
 	if _, err := Unmarshal([]byte("just: some yaml\n")); err == nil || err.Error() != "cogmem: not a memory export (no format_version)" {

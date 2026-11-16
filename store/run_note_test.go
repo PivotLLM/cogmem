@@ -76,7 +76,7 @@ func TestRunErrorSurvivesTheSplit(t *testing.T) {
 
 // The seven live databases predate the note column, so Open must add it rather
 // than failing to read them. Builds a consolidation_runs table WITHOUT the
-// column, exactly as an older ClawEh created it, then opens it normally.
+// column, exactly as an older host created it, then opens it normally.
 func TestOpenAddsNoteColumnToExistingDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.cogmem.db")
 

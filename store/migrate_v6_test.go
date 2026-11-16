@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// legacyV5 builds a database in the shape ClawEh wrote before v6: memories
+// legacyV5 builds a database in the shape the host wrote before v6: memories
 // carry source and priority columns, and some sit in the removed "review"
 // status. Returns its path.
 //

@@ -26,7 +26,7 @@ const (
 type MemoryType string
 
 const (
-	// TypeFact is something true: "Eric lives in Ottawa."
+	// TypeFact is something true: "Alice lives in Lisbon."
 	TypeFact MemoryType = "fact"
 	// TypePreference is how the user likes things done.
 	TypePreference MemoryType = "preference"
