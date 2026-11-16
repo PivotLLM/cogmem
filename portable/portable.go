@@ -171,7 +171,7 @@ func Export(ctx context.Context, st *store.Store) (Document, error) {
 // Marshal renders a Document as YAML.
 func Marshal(doc Document) ([]byte, error) {
 	var b strings.Builder
-	b.WriteString("# ClawEh cognitive memory export.\n")
+	b.WriteString("# cogmem export.\n")
 	b.WriteString("# Edit and import to restore. Ids are informational and are\n")
 	b.WriteString("# re-minted on import, so this file can be loaded into any agent.\n")
 	enc := yaml.NewEncoder(&b)

@@ -151,7 +151,7 @@ func seedDomain(t *testing.T, s *store.Store) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{
-		Name: "ClawEh", Status: store.StatusActive,
+		Name: "Gateway", Status: store.StatusActive,
 		Summary: "Go gateway project",
 	})
 	if err != nil {
@@ -246,8 +246,75 @@ func TestRunOnceKeywordViewAndNote(t *testing.T) {
 		t.Fatalf("stored agent=%q auto=%q blocked=%q", got.KeywordTriggers, got.AutoKeywords, got.BlockedKeywords)
 	}
 	run := lastRun(t, s)
-	if want := `keywords not added: ` + d.ID + ` "today" (too common)`; run.Status != "ok" || run.Error != "" || run.Note != want {
+	if want := `keywords not added: Billing "today" (too common)`; run.Status != "ok" || run.Error != "" || run.Note != want {
 		t.Fatalf("run = %+v, want ok with note %q", run, want)
+	}
+	if want := []DroppedKeyword{{DomainID: d.ID, DomainName: "Billing", Phrase: "today", Reason: "too common"}}; !slices.Equal(res.DroppedKeywords, want) {
+		t.Fatalf("RunResult.DroppedKeywords = %+v, want %+v", res.DroppedKeywords, want)
+	}
+}
+
+// Keywords dropped from several domains in one run, one created and one
+// updated, are all named in the note by domain name, in op order.
+func TestRunOnceNoteNamesDomainsOfDroppedKeywords(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	d, err := s.CreateDomain(ctx, s.DB(), store.CreateDomainParams{Name: "travel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedInbox(t, s, sampleMessages())
+	raw := fmt.Sprintf(`{"domain_ops":[
+		{"op":"update","id":%q,"keyword_triggers":"today,flight booking","evidence":{"seq_start":1,"seq_end":2}},
+		{"op":"create","tmp_id":"t1","name":"home office","summary":"desk setup","keyword_triggers":"good morning,standing desk,yesterday","evidence":{"seq_start":1,"seq_end":2}}
+	],"memory_ops":[],"conflict_ledger":[]}`, d.ID)
+	res, err := NewWorker(s, &fakeModel{raw: raw}).RunOnce(ctx, params())
+	if err != nil || res.Status != "ok" || res.Applied != 2 {
+		t.Fatalf("RunOnce = %+v, %v; want ok with both ops applied", res, err)
+	}
+	run := lastRun(t, s)
+	want := `keywords not added: travel "today" (too common), "home office" "good morning" (too common), "home office" "yesterday" (too common)`
+	if run.Note != want {
+		t.Fatalf("note = %q, want %q", run.Note, want)
+	}
+	if len(res.DroppedKeywords) != 3 {
+		t.Fatalf("RunResult.DroppedKeywords = %+v, want 3", res.DroppedKeywords)
+	}
+}
+
+func TestDroppedKeywordsText(t *testing.T) {
+	travel := DroppedKeyword{DomainID: "d1", DomainName: "travel", Phrase: "today", Reason: "too common"}
+	office := DroppedKeyword{DomainID: "d2", DomainName: "home office", Phrase: "desk", Reason: "already used by 3 domains"}
+	unnamed := DroppedKeyword{DomainID: "d7", Phrase: "hello", Reason: "too common"}
+	tests := []struct {
+		name    string
+		dropped []DroppedKeyword
+		limit   int
+		want    string
+	}{
+		{"name", []DroppedKeyword{travel}, 0, `travel "today" (too common)`},
+		{"name with a space is quoted", []DroppedKeyword{office}, 0, `"home office" "desk" (already used by 3 domains)`},
+		{"no name falls back to the id", []DroppedKeyword{unnamed}, 0, `d7 "hello" (too common)`},
+		{
+			"several domains",
+			[]DroppedKeyword{travel, office, unnamed},
+			0,
+			`travel "today" (too common), "home office" "desk" (already used by 3 domains), d7 "hello" (too common)`,
+		},
+		{
+			"limit lists the first and counts the rest",
+			[]DroppedKeyword{travel, office, unnamed},
+			1,
+			`travel "today" (too common), and 2 more`,
+		},
+		{"limit not reached", []DroppedKeyword{travel}, 1, `travel "today" (too common)`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := droppedKeywordsText(tt.dropped, tt.limit); got != tt.want {
+				t.Errorf("droppedKeywordsText = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -297,7 +364,7 @@ func TestRunOnceHappyPath(t *testing.T) {
 		t.Errorf("curated = %+v, want empty for a missing workspace", in.Curated)
 	}
 	dv := domainView(t, in, domainID)
-	if dv.Name != "ClawEh" || dv.Status != "active" || dv.Summary != "Go gateway project" {
+	if dv.Name != "Gateway" || dv.Status != "active" || dv.Summary != "Go gateway project" {
 		t.Errorf("domain view = %+v", dv)
 	}
 	if len(dv.Memories) != 1 || dv.Memories[0].ID != memoryID || dv.Memories[0].Type != "rule" ||
@@ -364,7 +431,7 @@ func TestRunOnceSendsWorkspaceToModel(t *testing.T) {
 	files := map[string]string{
 		PromptFilename: instructions,
 		"AGENTS.md":    "agents body",
-		"USER.md":      "The user is Eric.",
+		"USER.md":      "The user is Alice.",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(ws, name), []byte(body), 0o600); err != nil {
@@ -393,7 +460,7 @@ func TestRunOnceSendsWorkspaceToModel(t *testing.T) {
 		t.Error("system prompt is not BuildPrompt of the workspace COGMEM.md")
 	}
 	in := decodeInput(t, req)
-	want := Curated{AgentsMD: "agents body", UserMD: "The user is Eric."}
+	want := Curated{AgentsMD: "agents body", UserMD: "The user is Alice."}
 	if in.Curated != want {
 		t.Errorf("curated = %+v, want %+v", in.Curated, want)
 	}
@@ -699,7 +766,7 @@ func TestRunOnceApplyFailureRecordsError(t *testing.T) {
 		t.Fatalf("list domains: %v", err)
 	}
 
-	raw := `{"domain_ops":[{"op":"create","tmp_id":"t1","name":"ClawEh","summary":"a second one","evidence":{"seq_start":1,"seq_end":2}}],"memory_ops":[],"conflict_ledger":[]}`
+	raw := `{"domain_ops":[{"op":"create","tmp_id":"t1","name":"Gateway","summary":"a second one","evidence":{"seq_start":1,"seq_end":2}}],"memory_ops":[],"conflict_ledger":[]}`
 	w := NewWorker(s, &fakeModel{raw: raw})
 	res, err := w.RunOnce(ctx, params())
 	if err == nil || !errors.Is(err, store.ErrDuplicateName) {

@@ -31,9 +31,10 @@ type ApplyResult struct {
 
 // DroppedKeyword is one proposed keyword phrase Apply did not store.
 type DroppedKeyword struct {
-	DomainID string
-	Phrase   string
-	Reason   string
+	DomainID   string
+	DomainName string // the domain's name, for messages an operator reads
+	Phrase     string
+	Reason     string
 }
 
 // Apply writes a *validated* Output to the store in a single transaction:
@@ -68,7 +69,7 @@ func Apply(ctx context.Context, st *store.Store, out Output, ac ApplyContext) (A
 				if err != nil {
 					return err
 				}
-				res.DroppedKeywords = appendDropped(res.DroppedKeywords, d.ID, dropped)
+				res.DroppedKeywords = appendDropped(res.DroppedKeywords, d.ID, d.Name, dropped)
 				tmp[op.TmpID] = d.ID
 				if err := logOp(ctx, st, tx, ac, "create", d.ID, "", op.Reason, op.Evidence); err != nil {
 					return err
@@ -104,7 +105,7 @@ func Apply(ctx context.Context, st *store.Store, out Output, ac ApplyContext) (A
 					if auto != "" {
 						p.AutoKeywords = &auto
 					}
-					res.DroppedKeywords = appendDropped(res.DroppedKeywords, op.ID, dropped)
+					res.DroppedKeywords = appendDropped(res.DroppedKeywords, op.ID, cur.Name, dropped)
 				}
 				if op.Sticky != nil {
 					p.Sticky = op.Sticky
@@ -207,9 +208,9 @@ func autoKeywords(ctx context.Context, st *store.Store, tx *sql.Tx, cur store.Do
 	return strings.Join(keep, ","), rejected, nil
 }
 
-func appendDropped(out []DroppedKeyword, domainID string, rejected []store.KeywordRejection) []DroppedKeyword {
+func appendDropped(out []DroppedKeyword, domainID, domainName string, rejected []store.KeywordRejection) []DroppedKeyword {
 	for _, r := range rejected {
-		out = append(out, DroppedKeyword{DomainID: domainID, Phrase: r.Phrase, Reason: r.Reason})
+		out = append(out, DroppedKeyword{DomainID: domainID, DomainName: domainName, Phrase: r.Phrase, Reason: r.Reason})
 	}
 	return out
 }

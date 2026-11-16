@@ -783,7 +783,7 @@ func TestImportReMintsIDs(t *testing.T) {
 }
 
 // A file that is not a memory export is rejected rather than silently importing
-// nothing, and a document from a future ClawEh says so instead of dropping the
+// nothing, and a document from a future version says so instead of dropping the
 // fields it does not understand.
 func TestUnmarshalRejectsWhatItCannotRead(t *testing.T) {
 	if _, err := Unmarshal([]byte("just: some yaml\n")); err == nil || err.Error() != "cogmem: not a memory export (no format_version)" {
@@ -796,6 +796,48 @@ func TestUnmarshalRejectsWhatItCannotRead(t *testing.T) {
 	if _, err := Unmarshal([]byte("format_version: [not, a, number\n")); err == nil ||
 		!strings.HasPrefix(err.Error(), "cogmem: parse import: ") {
 		t.Errorf("malformed YAML: err = %v", err)
+	}
+}
+
+// The export starts with a "# cogmem export." comment line. The importer does
+// not read it: a file with that header and one with the older header, which
+// named the host application ("# <host> cognitive memory export."), import the
+// same.
+func TestExportHeaderIsIgnoredOnImport(t *testing.T) {
+	doc := Document{
+		FormatVersion: FormatVersion,
+		ExportedAt:    "2026-01-02T03:04:05Z",
+		Domains: []Domain{{
+			Name: "travel", Status: "active",
+			Memories: []Memory{{Type: "fact", Status: "active", Confidence: 0.9, Text: "Alice prefers aisle seats."}},
+		}},
+	}
+	data, err := Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const newHeader = "# cogmem export.\n"
+	if !strings.HasPrefix(string(data), newHeader) {
+		t.Fatalf("export starts %q, want %q", strings.SplitN(string(data), "\n", 2)[0], newHeader)
+	}
+	body := strings.TrimPrefix(string(data), newHeader)
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{"current header", newHeader},
+		{"older header naming the host", "# Host cognitive memory export.\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Unmarshal([]byte(tt.header + body))
+			if err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(got, doc) {
+				t.Errorf("unmarshal = %+v, want %+v", got, doc)
+			}
+		})
 	}
 }
 

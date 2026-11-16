@@ -303,6 +303,10 @@ func (m *Manager) clearInflight(key string) {
 	m.mu.Unlock()
 }
 
+// maxLoggedDroppedKeywords bounds the dropped keywords listed in one log line;
+// the run note lists them all.
+const maxLoggedDroppedKeywords = 10
+
 // runJob builds a Worker for the job and runs RunOnce in a loop while there is
 // more to consolidate. Errors are logged and end the loop for this job.
 func (m *Manager) runJob(ctx context.Context, j Job, trigger string) {
@@ -346,7 +350,7 @@ func (m *Manager) runJob(ctx context.Context, j Job, trigger string) {
 		}
 		// Log every outcome — including idle/busy, which previously left no trace
 		// in the log or the run table, making no-op runs impossible to diagnose.
-		logger.InfoCF("cogmem", "consolidation run finished", map[string]any{
+		fields := map[string]any{
 			"id":        j.ID,
 			"dir":       j.Dir,
 			"trigger":   trigger,
@@ -355,7 +359,12 @@ func (m *Manager) runJob(ctx context.Context, j Job, trigger string) {
 			"seq_start": res.SeqStart,
 			"seq_end":   res.SeqEnd,
 			"more":      res.More,
-		})
+		}
+		if n := len(res.DroppedKeywords); n > 0 {
+			fields["dropped_keywords"] = n
+			fields["dropped_keyword_list"] = droppedKeywordsText(res.DroppedKeywords, maxLoggedDroppedKeywords)
+		}
+		logger.InfoCF("cogmem", "consolidation run finished", fields)
 		if res.Status == "busy" {
 			return // another owner holds the lease; let it drain.
 		}

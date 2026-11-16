@@ -5,7 +5,7 @@
 
 // Package tools exposes the cognitive-memory store as toolspec tool definitions
 // with BARE names ("domain_get", "memory_create", ...). A host mounts them under
-// its own namespace (ClawEh publishes "cogmem_domain_get" and so on); the names
+// its own namespace (e.g. "cogmem_domain_get"); the names
 // follow object_verb: domain_* (containers), memory_* (items), plus the
 // subsystem tools status/explain/consolidate/export.
 //
