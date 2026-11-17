@@ -3,7 +3,7 @@ module github.com/PivotLLM/cogmem
 go 1.27.2
 
 require (
-	github.com/PivotLLM/toolspec v0.4.0
+	github.com/PivotLLM/toolspec v0.4.1
 	github.com/google/uuid v1.6.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.62.0
